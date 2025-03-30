@@ -4,3 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+sysinfo = "0.29.0"  # For system and process information
+tokio = { version = "1.28.0", features = ["full"] }  # For async runtime
+crossterm = "0.26.0"  # For terminal handling

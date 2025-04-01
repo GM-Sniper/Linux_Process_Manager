@@ -1,6 +1,6 @@
 // Project: Linux Process Manager
 mod process; 
-
+// mod ui;
 use process::ProcessManager;
 
 // This is a simple Linux process manager that displays system processes in a terminal interface (like ps).
@@ -19,48 +19,57 @@ use crossterm::{
 }; // crossterm crate for terminal manipulation
 use std::{io::{stdout, Write}, thread, time::Duration}; // std crate for IO and threading
 
-fn main() -> Result<(), Box<dyn std::error::Error>> { // Main function with error handling
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set up terminal
-    terminal::enable_raw_mode()?; // Raw mode for better control
+    terminal::enable_raw_mode()?; 
     let mut stdout = stdout();
-    execute!(stdout, terminal::EnterAlternateScreen)?; // Use alternate screen for better UI
+    execute!(stdout, terminal::EnterAlternateScreen)?; 
 
-    // Create a new ProcessManager instance
-    // This will be used to manage and display processes
     let mut process_manager = ProcessManager::new();
+    
+    let mut scroll_offset: usize = 0;  // Track scrolling position
+    let display_limit: usize = 20;     // Number of processes visible at a time
 
-    // This loop will refresh the process data and display it in the terminal
-    // The loop will run indefinitely until the user presses 'q'
     loop {
-        // Logic for q (quit) key press
+        // Handle key press events
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key_event) = event::read()? {
-                if key_event.code == KeyCode::Char('q') {
-                    break;
+                match key_event.code {
+                    KeyCode::Char('q') => break, // Quit
+                    KeyCode::Up => {
+                        if scroll_offset > 0 {
+                            scroll_offset -= 1; // Scroll up
+                        }
+                    }
+                    KeyCode::Down => {
+                        if scroll_offset < process_manager.get_processes().len().saturating_sub(display_limit) {
+                            scroll_offset += 1; // Scroll down
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
 
-        // Move cursor of screen to the top (avoids clearing screen)
+        // Move cursor to the top without clearing screen
         execute!(stdout, cursor::MoveTo(0, 0))?;
 
         // Refresh process data
         process_manager.refresh();
         let processes = process_manager.get_processes();
-        // Print the header (once)
+
         writeln!(
             stdout,
-            "{:<6} {:<16} {:>6} {:>10} {:>8} {:>12} {:>8} {:>10}",
+            "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>12} {:>10}",
             "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "USER", "STATUS",
         )?;
 
-        // Print each process in a fixed row position (taking only the first n processes)
-        let mut n = 20; // Number of processes to display
-        if processes.len() < n {
-            n = processes.len(); // Adjust n if there are fewer processes
-        }
-        for (i, process) in processes.iter().enumerate().take(n) {
-            execute!(stdout, cursor::MoveTo(0, (i + 1) as u16))?; // Move to line i+1
+        // Calculate range of processes to display based on scroll_offset
+        let start_index = scroll_offset;
+        let end_index = (scroll_offset + display_limit).min(processes.len());
+
+        for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
+            execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?; 
 
             let name = if process.name.len() > 15 {
                 format!("{:.12}...", process.name)
@@ -68,12 +77,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> { // Main function with erro
                 process.name.clone()
             };
 
-            let memory_mb = process.memory_usage / (1024 * 1024); // Convert memory to MB
+            let memory_mb = process.memory_usage / (1024 * 1024);
 
-            // Print process information (added STATUS at the end)
             writeln!(
                 stdout,
-                "{:<6} {:<16} {:>6.2} {:>10} {:>8} {:>12} {:>8} {:>10}",
+                "{:<6} {:<18} {:>6.2} {:>10} {:>8} {:>12} {:>12} {:>10}",
                 process.pid,
                 name,
                 process.cpu_usage,
@@ -85,16 +93,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> { // Main function with erro
             )?;
         }
 
+        // Print scroll instructions
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+        writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down \n")?;
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
+        writeln!(stdout, "1. Filter  |  2. Change Priority  |  3. Kill/Stop Process |  [Q] Quit")?;
 
-
-        // Flush output to update the screen
         stdout.flush()?;
-
-        // Wait before the next refresh
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(100));
     }
 
-    // Restore terminal to normal
     execute!(stdout, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
 

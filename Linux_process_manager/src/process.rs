@@ -1,4 +1,4 @@
-use sysinfo::{ProcessExt, System, SystemExt, PidExt};
+use sysinfo::{ProcessExt, System, SystemExt, PidExt, UserExt};
 
 #[derive(Clone)] // ProcessInfo struct to hold process information
 pub struct ProcessInfo {
@@ -50,7 +50,7 @@ impl ProcessManager {
                 parent_pid: process.parent().map(|p| p.as_u32()),
                 start_time: process.start_time(),
                 status: process.status().to_string(),
-                user: process.user_id().map(|id| id.to_string()),
+                user: process.user_id().and_then(|id| self.system.get_user_by_id(id).map(|user| user.name().to_string())),
             });
         }
         

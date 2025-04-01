@@ -60,22 +60,22 @@ impl ProcessManager {
         processes
     }
     // Very Basic print function for processes testing
-    pub fn print_processes(&self) {
-        let processes = self.get_processes();
+    // pub fn print_processes(&self) {
+    //     let processes = self.get_processes();
         
-        println!("{:<6} {:<15} {:>5} {:>10} {:>10} {:>12} {:>10}", 
-                 "PID", "NAME", "CPU%", "MEM(KB)", "PPID", "START", "USER");
+    //     println!("{:<6} {:<15} {:>5} {:>10} {:>10} {:>12} {:>10}", 
+    //              "PID", "NAME", "CPU%", "MEM(KB)", "PPID", "START", "USER");
 
-        for process in processes.iter().take(20) {
-            println!("{:<6} {:<15} {:>5.1} {:>10} {:>10} {:>12} {:>10}",
-                     process.pid,
-                     process.name,
-                     process.cpu_usage,
-                     process.memory_usage / 1024,
-                     process.parent_pid.unwrap_or(0),
-                     process.start_time,
-                     process.user.clone().unwrap_or("N/A".to_string()));
-        }
-    }
+    //     for process in processes.iter().take(20) {
+    //         println!("{:<6} {:<15} {:>5.1} {:>10} {:>10} {:>12} {:>10}",
+    //                  process.pid,
+    //                  process.name,
+    //                  process.cpu_usage,
+    //                  process.memory_usage / 1024,
+    //                  process.parent_pid.unwrap_or(0),
+    //                  process.start_time,
+    //                  process.user.clone().unwrap_or("N/A".to_string()));
+    //     }
+    // }
 }
 

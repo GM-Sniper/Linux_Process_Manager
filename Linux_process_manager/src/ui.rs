@@ -1,7 +1,13 @@
+use crate::process;
+use crate::process::ProcessInfo;  // ProcessInfo is defined in process.rs
 
-use crate::process::ProcessInfo; // ProcessInfo is defined in process.rs
+use process::ProcessManager;
+use std::error::Error;
+use std::thread::sleep;
+use std::time::Duration;
 use crossterm::{
     cursor, execute, terminal, terminal::ClearType,
+    event::{self, Event, KeyCode},
 };
 use std::io::{stdout, Write};
 
@@ -12,12 +18,73 @@ pub fn setup_terminal() -> std::io::Result<()> {
     Ok(())
 }
 
+
 // Restore terminal back to normal
 pub fn restore_terminal() -> std::io::Result<()> {
     execute!(stdout(), terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     Ok(())
 }
+
+
+//ui_renderer
+pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
+    setup_terminal()?; // Setup terminal for raw mode and alternate screen
+
+    let mut process_manager = ProcessManager::new(); // Initialize process manager
+    let mut scroll_offset: usize = 0;                // Track scrolling position
+    let display_limit: usize = 20;                   // Number of processes visible at a time
+    let process_len = process_manager.get_processes().len(); // Total number of processes
+
+    loop {
+        // Handle key press events
+        if handle_key_event(&mut scroll_offset, display_limit, process_len)? {
+            break; // Exit loop if 'q' is pressed
+        }
+
+        // Refresh and draw
+        process_manager.refresh();
+        let processes = process_manager.get_processes();
+        draw_processes(&processes, scroll_offset, display_limit)?;
+        draw_menu(display_limit)?;
+
+        sleep(Duration::from_millis(100));
+    }
+
+    restore_terminal()?; // Reset terminal state
+    Ok(())
+}
+
+
+pub fn handle_key_event(
+    scroll_offset: &mut usize,
+    display_limit: usize,
+    process_len: usize
+) -> std::io::Result<bool> {
+    if event::poll(Duration::from_millis(100))? {
+        if let Event::Key(key_event) = event::read()? {
+            match key_event.code {
+                KeyCode::Char('q') => return Ok(true), // Signal to quit
+                KeyCode::Up => {
+                    if *scroll_offset > 0 {
+                        *scroll_offset -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if *scroll_offset < process_len.saturating_sub(display_limit) {
+                        *scroll_offset += 1;
+                    }
+                }
+                KeyCode::Char('1') => {
+                    draw_filter_menu()?; // Enter filter menu
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(false)
+}
+
 
 // Draw the process list
 pub fn draw_processes(processes: &[ProcessInfo], scroll_offset: usize, display_limit: usize) -> std::io::Result<()> {
@@ -61,7 +128,6 @@ pub fn draw_processes(processes: &[ProcessInfo], scroll_offset: usize, display_l
 
 
 
-        // Convert memory usage from bytes to megabytes
         let memory_mb = process.memory_usage / (1024 * 1024);
 
         // Print the process information in a formatted manner
@@ -83,6 +149,7 @@ pub fn draw_processes(processes: &[ProcessInfo], scroll_offset: usize, display_l
     Ok(())
 }
 
+
 // Draw the menu options
 pub fn draw_menu(display_limit: usize) -> std::io::Result<()> {
     let mut stdout = stdout();
@@ -91,5 +158,35 @@ pub fn draw_menu(display_limit: usize) -> std::io::Result<()> {
     execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
     writeln!(stdout, "1. Filter  |  2. Change Priority  |  3. Kill/Stop Process |  [Q] Quit")?;
     stdout.flush()?;
+    Ok(())
+
+}
+
+
+// Draw the filter menu
+pub fn draw_filter_menu() -> std::io::Result<()> {
+    loop{
+    let mut stdout = stdout();
+        execute!(stdout, terminal::Clear(terminal::ClearType::All))?;
+        execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+        writeln!(stdout, "1. Sort  |  2. Filter  |  [←] Back")?;
+        stdout.flush()?;
+
+        if let Event::Key(event) = event::read()? {
+            match event.code {
+                KeyCode::Char('1') => {
+                    // TODO: handle sort
+                }
+                KeyCode::Char('2') => {
+                    // TODO: handle filter
+                }
+                KeyCode::Backspace | KeyCode::Left => {
+                    break; // go back to main ui
+                }
+                _ => continue,
+            }
+        }
+    }
+    
     Ok(())
 }

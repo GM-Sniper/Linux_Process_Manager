@@ -7,3 +7,4 @@ edition = "2024"
 sysinfo = "0.29.0"  # For system and process information
 tokio = { version = "1.28.0", features = ["full"] }  # For async runtime
 crossterm = "0.26.0"  # For terminal handling
+procfs = "0.16" # For getting the nice of a system

@@ -188,6 +188,7 @@ pub fn draw_filter_menu() -> std::io::Result<()> {
     
     Ok(())
 }
+
 pub fn draw_sort_menu() -> std::io::Result<()> {
     loop{
         let mut stdout = stdout();
@@ -198,16 +199,16 @@ pub fn draw_sort_menu() -> std::io::Result<()> {
             if let Event::Key(event) = event::read()? {
                 match event.code {
                     KeyCode::Char('1') => {
-                        draw_processes_by_pid_loop(20)?; // Enter sorted menu
+                        draw_sorted_processes(20, "pid")?; // Enter sorted menu
                     }
                     KeyCode::Char('2') => {
-                        draw_processes_by_mem_loop(20)?;
+                        draw_sorted_processes(20, "mem")?; // Enter sorted menu
                     }
                     KeyCode::Char('3') => {
-                        draw_processes_by_ppid_loop(20)?;
+                        draw_sorted_processes(20, "ppid")?; // Enter sorted menu
                     }
                     KeyCode::Char('4') => {
-                        draw_processes_by_start_loop(20)?;
+                        draw_sorted_processes(20, "start")?; // Enter sorted menu
                     }
                     KeyCode::Backspace | KeyCode::Left => {
                         break; // go back to main ui
@@ -220,309 +221,79 @@ pub fn draw_sort_menu() -> std::io::Result<()> {
         Ok(())
     }
 
-
-pub fn draw_processes_by_pid_loop(display_limit: usize) -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new();
-    let mut scroll_offset: usize = 0;
-    let process_len = process_manager.get_processes().len();
-
-    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-
-    writeln!(
-        stdout,
-        "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>12} {:>10}",
-        "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "USER", "STATUS",
-    )?;
-
-    loop {
-        if handle_key_event(&mut scroll_offset, display_limit, process_len)? {
-            break; // Exit loop if 'q' is pressed
-        }
-        // Refresh process list
-        process_manager.refresh();
-        let mut processes = process_manager.get_processes().clone();
-
-        // Sort by PID
-        processes.sort_by_key(|p| p.pid);
-
-        // Clear and draw header
-
-
-
-        let start_index = scroll_offset;
-        let end_index = (scroll_offset + display_limit).min(processes.len());
-
-        for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
-            execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
-
-            let name = if process.name.len() > 15 {
-                format!("{:.12}...", process.name)
-            } else {
-                process.name.clone()
-            };
-
-            let user = process.user.clone().unwrap_or_default();
-            let user_display = if user.len() > 10 {
-                format!("{:.7}...", user)
-            } else {
-                user
-            };
-
-            let memory_mb = process.memory_usage / (1024 * 1024);
-
+    pub fn draw_sorted_processes(display_limit: usize, sort_mode: &str) -> std::io::Result<()> {
+        let mut stdout = stdout();
+        let mut process_manager = ProcessManager::new();
+        let mut scroll_offset: usize = 0;
+    
+        loop {
+            process_manager.refresh();
+            let mut processes = process_manager.get_processes().clone();
+    
+            // Apply sorting based on sort_mode
+            match sort_mode {
+                "pid" => processes.sort_by_key(|p| p.pid),
+                "ppid" => processes.sort_by_key(|p| p.parent_pid.unwrap_or(0)),
+                "mem" => processes.sort_by(|a, b| b.memory_usage.cmp(&a.memory_usage)),
+                "start" => processes.sort_by(|a, b| a.start_time.cmp(&b.start_time)),
+                _ => {} // default: no sort
+            }
+    
+            if handle_key_event(&mut scroll_offset, display_limit, processes.len())? {
+                break;
+            }
+    
+            // Clear and draw header
+            execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
             writeln!(
                 stdout,
-                "{:<6} {:<18} {:>6.2} {:>10} {:>8} {:>12} {:>12} {:>10}",
-                process.pid,
-                name,
-                process.cpu_usage,
-                memory_mb,
-                process.parent_pid.unwrap_or(0),
-                process.start_time,
-                user_display,
-                process.status.trim(),
+                "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>12} {:>10}",
+                "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "USER", "STATUS",
             )?;
+    
+            let start_index = scroll_offset;
+            let end_index = (scroll_offset + display_limit).min(processes.len());
+    
+            for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
+                execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
+    
+                let name = if process.name.len() > 15 {
+                    format!("{:.12}...", process.name)
+                } else {
+                    process.name.clone()
+                };
+    
+                let user = process.user.clone().unwrap_or_default();
+                let user_display = if user.len() > 10 {
+                    format!("{:.7}...", user)
+                } else {
+                    user
+                };
+    
+                let memory_mb = process.memory_usage / (1024 * 1024);
+    
+                writeln!(
+                    stdout,
+                    "{:<6} {:<18} {:>6.2} {:>10} {:>8} {:>12} {:>12} {:>10}",
+                    process.pid,
+                    name,
+                    process.cpu_usage,
+                    memory_mb,
+                    process.parent_pid.unwrap_or(0),
+                    process.start_time,
+                    user_display,
+                    process.status.trim(),
+                )?;
+            }
+    
+            execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+            writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down")?;
+            execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
+            writeln!(stdout, "[←] Back")?;
+    
+            stdout.flush()?;
+            sleep(Duration::from_millis(100));
         }
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down \n")?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-        writeln!(stdout, "[←] Back")?;
-
-
-        stdout.flush()?;
-        sleep(Duration::from_millis(100));
+    
+        Ok(())
     }
-    Ok(())
-}
-
-pub fn draw_processes_by_mem_loop(display_limit: usize) -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new();
-    let mut scroll_offset: usize = 0;
-    let process_len = process_manager.get_processes().len();
-
-
-    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-
-    writeln!(
-        stdout,
-        "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>12} {:>10}",
-        "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "USER", "STATUS",
-    )?;
-
-    loop {
-        if handle_key_event(&mut scroll_offset, display_limit, process_len)? {
-            break; // Exit loop if 'q' is pressed
-        }
-        // Refresh process list
-        process_manager.refresh();
-        let mut processes = process_manager.get_processes().clone();
-
-        // Sort by Memory usage
-        processes.sort_by(|a, b| b.memory_usage.cmp(&a.memory_usage));
-        // Clear and draw header
-
-
-
-        let start_index = scroll_offset;
-        let end_index = (scroll_offset + display_limit).min(processes.len());
-
-        for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
-            execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
-
-            let name = if process.name.len() > 15 {
-                format!("{:.12}...", process.name)
-            } else {
-                process.name.clone()
-            };
-
-            let user = process.user.clone().unwrap_or_default();
-            let user_display = if user.len() > 10 {
-                format!("{:.7}...", user)
-            } else {
-                user
-            };
-
-            let memory_mb = process.memory_usage / (1024 * 1024);
-
-            writeln!(
-                stdout,
-                "{:<6} {:<18} {:>6.2} {:>10} {:>8} {:>12} {:>12} {:>10}",
-                process.pid,
-                name,
-                process.cpu_usage,
-                memory_mb,
-                process.parent_pid.unwrap_or(0),
-                process.start_time,
-                user_display,
-                process.status.trim(),
-            )?;
-        }
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down \n")?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-        writeln!(stdout, "[←] Back")?;
-
-
-        stdout.flush()?;
-        sleep(Duration::from_millis(100));
-    }
-    Ok(())
-}
-
-
-pub fn draw_processes_by_ppid_loop(display_limit: usize) -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new();
-    let mut scroll_offset: usize = 0;
-    let process_len = process_manager.get_processes().len();
-
-
-    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-
-    writeln!(
-        stdout,
-        "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>12} {:>10}",
-        "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "USER", "STATUS",
-    )?;
-
-    loop {
-        if handle_key_event(&mut scroll_offset, display_limit, process_len)? {
-            break; // Exit loop if 'q' is pressed
-        }
-        // Refresh process list
-        process_manager.refresh();
-        let mut processes = process_manager.get_processes().clone();
-
-        // Sort by PPID
-        // processes.sort_by_key(|p| p.parent_pid.unwrap_or(0)); //to make it ascending
-        processes.sort_by(|a, b| b.parent_pid.unwrap_or(0).cmp(&a.parent_pid.unwrap_or(0))); //to make it descending
-
-
-        // Clear and draw header
-
-
-
-        let start_index = scroll_offset;
-        let end_index = (scroll_offset + display_limit).min(processes.len());
-
-        for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
-            execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
-
-            let name = if process.name.len() > 15 {
-                format!("{:.12}...", process.name)
-            } else {
-                process.name.clone()
-            };
-
-            let user = process.user.clone().unwrap_or_default();
-            let user_display = if user.len() > 10 {
-                format!("{:.7}...", user)
-            } else {
-                user
-            };
-
-            let memory_mb = process.memory_usage / (1024 * 1024);
-
-            writeln!(
-                stdout,
-                "{:<6} {:<18} {:>6.2} {:>10} {:>8} {:>12} {:>12} {:>10}",
-                process.pid,
-                name,
-                process.cpu_usage,
-                memory_mb,
-                process.parent_pid.unwrap_or(0),
-                process.start_time,
-                user_display,
-                process.status.trim(),
-            )?;
-        }
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down \n")?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-        writeln!(stdout, "[←] Back")?;
-
-
-        stdout.flush()?;
-        sleep(Duration::from_millis(100));
-    }
-    Ok(())
-}
-
-pub fn draw_processes_by_start_loop(display_limit: usize) -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new();
-    let mut scroll_offset: usize = 0;
-    let process_len = process_manager.get_processes().len();
-
-
-    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-
-    writeln!(
-        stdout,
-        "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>12} {:>10}",
-        "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "USER", "STATUS",
-    )?;
-
-    loop {
-        if handle_key_event(&mut scroll_offset, display_limit, process_len)? {
-            break; // Exit loop if 'q' is pressed
-        }
-        // Refresh process list
-        process_manager.refresh();
-        let mut processes = process_manager.get_processes().clone();
-
-        // Sort by PPID
-        processes.sort_by(|a, b| b.start_time.cmp(&a.start_time));
-
-
-        // Clear and draw header
-
-
-
-        let start_index = scroll_offset;
-        let end_index = (scroll_offset + display_limit).min(processes.len());
-
-        for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
-            execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
-
-            let name = if process.name.len() > 15 {
-                format!("{:.12}...", process.name)
-            } else {
-                process.name.clone()
-            };
-
-            let user = process.user.clone().unwrap_or_default();
-            let user_display = if user.len() > 10 {
-                format!("{:.7}...", user)
-            } else {
-                user
-            };
-
-            let memory_mb = process.memory_usage / (1024 * 1024);
-
-            writeln!(
-                stdout,
-                "{:<6} {:<18} {:>6.2} {:>10} {:>8} {:>12} {:>12} {:>10}",
-                process.pid,
-                name,
-                process.cpu_usage,
-                memory_mb,
-                process.parent_pid.unwrap_or(0),
-                process.start_time,
-                user_display,
-                process.status.trim(),
-            )?;
-        }
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down \n")?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-        writeln!(stdout, "[←] Back")?;
-
-
-        stdout.flush()?;
-        sleep(Duration::from_millis(100));
-    }
-    Ok(())
-}

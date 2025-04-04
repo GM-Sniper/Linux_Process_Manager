@@ -63,7 +63,7 @@ pub fn handle_key_event(
     if event::poll(Duration::from_millis(100))? {
         if let Event::Key(key_event) = event::read()? {
             match key_event.code {
-                KeyCode::Char('q') | KeyCode::Backspace => return Ok(true), // Signal to quit
+                KeyCode::Char('q') => return Ok(true), // Signal to quit
                 KeyCode::Up => {
                     if *scroll_offset > 0 {
                         *scroll_offset -= 1;
@@ -83,7 +83,106 @@ pub fn handle_key_event(
     }
     Ok(false)
 }
+pub fn handle_filter_key_event(
+    scroll_offset: &mut usize,
+    display_limit: usize,
+    process_len: usize
+) -> std::io::Result<bool> {
+    if event::poll(Duration::from_millis(100))? {
+        if let Event::Key(key_event) = event::read()? {
+            match key_event.code {
 
+                KeyCode::Char('1') => {
+                    draw_sort_menu()?; // Enter sort menu
+                }
+                KeyCode::Char('2') => {
+                    // TODO: Enter Filter menu
+                }
+
+                KeyCode::Backspace => return Ok(true), // Signal to quit
+
+                KeyCode::Up => {
+                    if *scroll_offset > 0 {
+                        *scroll_offset -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if *scroll_offset < process_len.saturating_sub(display_limit) {
+                        *scroll_offset += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(false)
+}
+
+pub fn handle_sort_key_event(
+    scroll_offset: &mut usize,
+    display_limit: usize,
+    process_len: usize
+) -> std::io::Result<bool> {
+    if event::poll(Duration::from_millis(100))? {
+        if let Event::Key(key_event) = event::read()? {
+            match key_event.code {
+
+                KeyCode::Char('1') => {
+                    draw_sorted_processes(20, "pid")?; // Enter sorted menu
+                }
+                KeyCode::Char('2') => {
+                    draw_sorted_processes(20, "mem")?; // Enter sorted menu
+                }
+                KeyCode::Char('3') => {
+                    draw_sorted_processes(20, "ppid")?; // Enter sorted menu
+                }
+                KeyCode::Char('4') => {
+                    draw_sorted_processes(20, "start")?; // Enter sorted menu
+                }
+                KeyCode::Backspace => return Ok(true), // Signal to quit
+
+                KeyCode::Up => {
+                    if *scroll_offset > 0 {
+                        *scroll_offset -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if *scroll_offset < process_len.saturating_sub(display_limit) {
+                        *scroll_offset += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(false)
+}
+
+pub fn handle_ssort_key_event(
+    scroll_offset: &mut usize,
+    display_limit: usize,
+    process_len: usize
+) -> std::io::Result<bool> {
+    if event::poll(Duration::from_millis(100))? {
+        if let Event::Key(key_event) = event::read()? {
+            match key_event.code {
+                KeyCode::Backspace => return Ok(true), // Signal to quit
+                KeyCode::Up => {
+                    if *scroll_offset > 0 {
+                        *scroll_offset -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if *scroll_offset < process_len.saturating_sub(display_limit) {
+                        *scroll_offset += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(false)
+}
 
 // Draw the process list
 pub fn draw_processes(processes: &[ProcessInfo], scroll_offset: usize, display_limit: usize) -> std::io::Result<()> {
@@ -164,60 +263,52 @@ pub fn draw_menu(display_limit: usize) -> std::io::Result<()> {
 
 // Draw the filter menu
 pub fn draw_filter_menu() -> std::io::Result<()> {
-    loop{
-    let mut stdout = stdout();
-        execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-        writeln!(stdout, "1. Sort  |  2. Filter  |  [←] Back")?;
-        stdout.flush()?;
 
-        if let Event::Key(event) = event::read()? {
-            match event.code {
-                KeyCode::Char('1') => {
-                    draw_sort_menu()?; // Enter sort menu
-                }
-                KeyCode::Char('2') => {
-                    // TODO: Enter Filter menu
-                }
-                KeyCode::Backspace | KeyCode::Left => {
-                    break; // go back to main ui
-                }
-                _ => continue,
-            }
+    let mut stdout = stdout();
+    let mut process_manager = ProcessManager::new(); // Initialize process manager
+    let mut scroll_offset: usize = 0;                // Track scrolling position
+    let display_limit: usize = 20;                   // Number of processes visible at a time
+    let process_len = process_manager.get_processes().len(); // Total number of processes
+
+    loop{
+        process_manager.refresh();
+        let processes = process_manager.get_processes().clone();
+        if handle_filter_key_event(&mut scroll_offset, display_limit, process_len)? {
+            break; // Exit loop if 'q' is pressed
         }
+
+        draw_processes(&processes, scroll_offset, display_limit)?;
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+        writeln!(stdout, "1. Sort  |  2. Filter  |  [←] Back")?;
+
     }
+
+    stdout.flush()?;
+    sleep(Duration::from_millis(100));
     
     Ok(())
 }
 
 pub fn draw_sort_menu() -> std::io::Result<()> {
+    let mut stdout = stdout();
+    let mut process_manager = ProcessManager::new(); // Initialize process manager
+    let mut scroll_offset: usize = 0;                // Track scrolling position
+    let display_limit: usize = 20;                   // Number of processes visible at a time
+    let process_len = process_manager.get_processes().len(); // Total number of processes
     loop{
-        let mut stdout = stdout();
-            execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-            writeln!(stdout, "1. Sort by PID  |  2. Sort by MEM  |  3. Sort by PPID  |  4. Sort by Start  |  [←] Back")?;
-            stdout.flush()?;
-    
-            if let Event::Key(event) = event::read()? {
-                match event.code {
-                    KeyCode::Char('1') => {
-                        draw_sorted_processes(20, "pid")?; // Enter sorted menu
-                    }
-                    KeyCode::Char('2') => {
-                        draw_sorted_processes(20, "mem")?; // Enter sorted menu
-                    }
-                    KeyCode::Char('3') => {
-                        draw_sorted_processes(20, "ppid")?; // Enter sorted menu
-                    }
-                    KeyCode::Char('4') => {
-                        draw_sorted_processes(20, "start")?; // Enter sorted menu
-                    }
-                    KeyCode::Backspace | KeyCode::Left => {
-                        break; // go back to main ui
-                    }
-                    _ => continue,
-                }
+        process_manager.refresh();
+        let processes = process_manager.get_processes().clone();
+            if handle_sort_key_event(&mut scroll_offset, display_limit, process_len)? {
+                break; // Exit loop if 'q' is pressed
             }
+            draw_processes(&processes, scroll_offset, display_limit)?;
+            execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+            writeln!(stdout, "1. Sort by PID  |  2. Sort by MEM  |  3. Sort by PPID  |  4. Sort by Start  |  [←] Back")?;
+
+
         }
-        
+        stdout.flush()?;
+        sleep(Duration::from_millis(100));
         Ok(())
     }
 
@@ -239,7 +330,7 @@ pub fn draw_sort_menu() -> std::io::Result<()> {
                 _ => {} // default: no sort
             }
     
-            if handle_key_event(&mut scroll_offset, display_limit, processes.len())? {
+            if handle_ssort_key_event(&mut scroll_offset, display_limit, processes.len())? {
                 break;
             }
     

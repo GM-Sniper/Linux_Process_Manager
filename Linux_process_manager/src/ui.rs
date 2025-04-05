@@ -59,7 +59,6 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-
 pub fn handle_key_event(
     scroll_offset: &mut usize,
     display_limit: usize,
@@ -88,6 +87,7 @@ pub fn handle_key_event(
     }
     Ok(false)
 }
+
 pub fn handle_filter_key_event(
     scroll_offset: &mut usize,
     display_limit: usize,
@@ -143,6 +143,9 @@ pub fn handle_sort_key_event(
                 }
                 KeyCode::Char('4') => {
                     draw_sorted_processes(20, "start")?; // Enter sorted menu
+                }
+                KeyCode::Char('5') => {
+                    draw_sorted_processes(20, "nice")?; // Enter sorted menu for nice value
                 }
                 KeyCode::Backspace => return Ok(true), // Signal to quit
 
@@ -200,8 +203,8 @@ pub fn draw_processes(processes: &[ProcessInfo], scroll_offset: usize, display_l
     
     writeln!(
         stdout,
-        "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>12} {:>10}",
-        "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "USER", "STATUS",
+        "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>8} {:>12} {:>10}",
+        "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "NICE", "USER", "STATUS",
     )?;
     
     // Reset colors and styling
@@ -268,9 +271,14 @@ pub fn draw_processes(processes: &[ProcessInfo], scroll_offset: usize, display_l
         stdout.execute(SetForegroundColor(Color::Cyan))?;
         write!(stdout, "{:>8} ", process.parent_pid.unwrap_or(0))?;
         
-        // Start time in default color
+        // Start time in default color (formatted time)
         stdout.execute(SetForegroundColor(Color::White))?;
-        write!(stdout, "{:>12} ", process.start_time)?;
+        // write!(stdout, "{:>12} ", process.start_time)?; // Old start time
+        write!(stdout, "{:>12} ", process.startTime)?; // New formatted start time
+        
+        // Nice value in yellow
+        stdout.execute(SetForegroundColor(Color::Yellow))?;
+        write!(stdout, "{:>8} ", process.nice)?;
         
         // User in magenta
         stdout.execute(SetForegroundColor(Color::Magenta))?;
@@ -309,7 +317,7 @@ pub fn draw_menu(display_limit: usize) -> std::io::Result<()> {
     
     // Menu options with different colors
     stdout.execute(SetForegroundColor(Color::Yellow))?;
-    write!(stdout, "1. Filter")?;
+    write!(stdout, "1. Sort and Filter")?;
     stdout.execute(ResetColor)?;
     write!(stdout, "  |  ")?;
     
@@ -424,6 +432,13 @@ pub fn draw_sort_menu() -> std::io::Result<()> {
         stdout.execute(ResetColor)?;
         write!(stdout, "  |  ")?;
         
+        // Option 5
+        stdout.execute(SetForegroundColor(Color::Magenta))?;
+        write!(stdout, "5. Sort by Nice")?;
+        
+        stdout.execute(ResetColor)?;
+        write!(stdout, "  |  ")?;
+        
         // Back button
         stdout.execute(SetForegroundColor(Color::Blue))?;
         writeln!(stdout, "[←] Back")?;
@@ -437,144 +452,149 @@ pub fn draw_sort_menu() -> std::io::Result<()> {
     Ok(())
 }
 
-    pub fn draw_sorted_processes(display_limit: usize, sort_mode: &str) -> std::io::Result<()> {
-        let mut stdout = stdout();
-        let mut process_manager = ProcessManager::new();
-        let mut scroll_offset: usize = 0;
-    
-        loop {
-            process_manager.refresh();
-            let mut processes = process_manager.get_processes().clone();
-    
-            // Apply sorting based on sort_mode (logic unchanged)
-            match sort_mode {
-                "pid" => processes.sort_by_key(|p| p.pid),
-                "ppid" => processes.sort_by_key(|p| p.parent_pid.unwrap_or(0)),
-                "mem" => processes.sort_by(|a, b| b.memory_usage.cmp(&a.memory_usage)),
-                "start" => processes.sort_by(|a, b| a.start_time.cmp(&b.start_time)),
-                _ => {} // default: no sort
-            }
-    
-            if handle_ssort_key_event(&mut scroll_offset, display_limit, processes.len())? {
-                break;
-            }
-    
-            // Clear and draw header with color
-            execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-            
-            // Header in bold bright white on blue background
-            stdout.execute(SetAttribute(Attribute::Bold))?;
-            stdout.execute(SetForegroundColor(Color::White))?;
-            stdout.execute(SetBackgroundColor(Color::Blue))?;
-            
-            writeln!(
-                stdout,
-                "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>12} {:>10}",
-                "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "USER", "STATUS",
-            )?;
-            
-            // Reset colors and styling
-            stdout.execute(ResetColor)?;
-            stdout.execute(SetAttribute(Attribute::Reset))?;
-    
-            let start_index = scroll_offset;
-            let end_index = (scroll_offset + display_limit).min(processes.len());
-    
-            for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
-                execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
-    
-                let name = if process.name.len() > 15 {
-                    format!("{:.12}...", process.name)
-                } else {
-                    process.name.clone()
-                };
-    
-                let user = process.user.clone().unwrap_or_default();
-                let user_display = if user.len() > 10 {
-                    format!("{:.7}...", user)
-                } else {
-                    user
-                };
-    
-                let memory_mb = process.memory_usage / (1024 * 1024);
-                
-                // Set PID color based on odd/even rows for readability
-                if i % 2 == 0 {
-                    stdout.execute(SetForegroundColor(Color::Cyan))?;
-                } else {
-                    stdout.execute(SetForegroundColor(Color::Blue))?;
-                }
-                
-                write!(stdout, "{:<6} ", process.pid)?;
-                
-                // Process name in green
-                stdout.execute(SetForegroundColor(Color::Green))?;
-                write!(stdout, "{:<18} ", name)?;
-                
-                // CPU usage with color based on value
-                let cpu_color = match process.cpu_usage {
-                    c if c > 50.0 => Color::Red,
-                    c if c > 25.0 => Color::Yellow,
-                    _ => Color::Green,
-                };
-                stdout.execute(SetForegroundColor(cpu_color))?;
-                write!(stdout, "{:>6.2} ", process.cpu_usage)?;
-                
-                // Memory usage with color based on value
-                let mem_color = match memory_mb {
-                    m if m > 1000 => Color::Red,
-                    m if m > 500 => Color::Yellow,
-                    _ => Color::Green,
-                };
-                stdout.execute(SetForegroundColor(mem_color))?;
-                write!(stdout, "{:>10} ", memory_mb)?;
-                
-                // PPID in light blue
-                stdout.execute(SetForegroundColor(Color::Cyan))?;
-                write!(stdout, "{:>8} ", process.parent_pid.unwrap_or(0))?;
-                
-                // Start time in default color
-                stdout.execute(SetForegroundColor(Color::White))?;
-                write!(stdout, "{:>12} ", process.start_time)?;
-                
-                // User in magenta
-                stdout.execute(SetForegroundColor(Color::Magenta))?;
-                write!(stdout, "{:>12} ", user_display)?;
-                
-                // Status with color based on state
-                let status = process.status.trim();
-                let status_color = match status.to_lowercase().as_str() {
-                    "running" => Color::Green,
-                    "sleeping" => Color::Blue,
-                    "stopped" => Color::Yellow,
-                    "zombie" => Color::Red,
-                    _ => Color::White,
-                };
-                stdout.execute(SetForegroundColor(status_color))?;
-                writeln!(stdout, "{:>10}", status)?;
-            }
-    
-            // Reset color before drawing navigation
-            stdout.execute(ResetColor)?;
-            
-            execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-            
-            // Navigation in cyan
-            stdout.execute(SetForegroundColor(Color::Cyan))?;
-            writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down")?;
-            
-            execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-            
-            // Back button in blue
-            stdout.execute(SetForegroundColor(Color::Blue))?;
-            writeln!(stdout, "[←] Back")?;
-            
-            // Reset color
-            stdout.execute(ResetColor)?;
-            
-            stdout.flush()?;
-            sleep(Duration::from_millis(100));
+pub fn draw_sorted_processes(display_limit: usize, sort_mode: &str) -> std::io::Result<()> {
+    let mut stdout = stdout();
+    let mut process_manager = ProcessManager::new();
+    let mut scroll_offset: usize = 0;
+
+    loop {
+        process_manager.refresh();
+        let mut processes = process_manager.get_processes().clone();
+
+        // Apply sorting based on sort_mode
+        match sort_mode {
+            "pid" => processes.sort_by_key(|p| p.pid),
+            "ppid" => processes.sort_by_key(|p| p.parent_pid.unwrap_or(0)),
+            "mem" => processes.sort_by(|a, b| b.memory_usage.cmp(&a.memory_usage)),
+            "start" => processes.sort_by(|a, b| a.start_time.cmp(&b.start_time)),
+            "nice" => processes.sort_by_key(|p| p.nice),
+            _ => {} // default: no sort
         }
-    
-        Ok(())
+
+        if handle_ssort_key_event(&mut scroll_offset, display_limit, processes.len())? {
+            break;
+        }
+
+        // Clear and draw header with color
+        execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+        
+        // Header in bold bright white on blue background
+        stdout.execute(SetAttribute(Attribute::Bold))?;
+        stdout.execute(SetForegroundColor(Color::White))?;
+        stdout.execute(SetBackgroundColor(Color::Blue))?;
+        
+        writeln!(
+            stdout,
+            "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>8} {:>12} {:>10}",
+            "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "NICE", "USER", "STATUS",
+        )?;
+        
+        // Reset colors and styling
+        stdout.execute(ResetColor)?;
+        stdout.execute(SetAttribute(Attribute::Reset))?;
+
+        let start_index = scroll_offset;
+        let end_index = (scroll_offset + display_limit).min(processes.len());
+
+        for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
+            execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
+
+            let name = if process.name.len() > 15 {
+                format!("{:.12}...", process.name)
+            } else {
+                process.name.clone()
+            };
+
+            let user = process.user.clone().unwrap_or_default();
+            let user_display = if user.len() > 10 {
+                format!("{:.7}...", user)
+            } else {
+                user
+            };
+
+            let memory_mb = process.memory_usage / (1024 * 1024);
+            
+            // Set PID color based on odd/even rows for readability
+            if i % 2 == 0 {
+                stdout.execute(SetForegroundColor(Color::Cyan))?;
+            } else {
+                stdout.execute(SetForegroundColor(Color::Blue))?;
+            }
+            
+            write!(stdout, "{:<6} ", process.pid)?;
+            
+            // Process name in green
+            stdout.execute(SetForegroundColor(Color::Green))?;
+            write!(stdout, "{:<18} ", name)?;
+            
+            // CPU usage with color based on value
+            let cpu_color = match process.cpu_usage {
+                c if c > 50.0 => Color::Red,
+                c if c > 25.0 => Color::Yellow,
+                _ => Color::Green,
+            };
+            stdout.execute(SetForegroundColor(cpu_color))?;
+            write!(stdout, "{:>6.2} ", process.cpu_usage)?;
+            
+            // Memory usage with color based on value
+            let mem_color = match memory_mb {
+                m if m > 1000 => Color::Red,
+                m if m > 500 => Color::Yellow,
+                _ => Color::Green,
+            };
+            stdout.execute(SetForegroundColor(mem_color))?;
+            write!(stdout, "{:>10} ", memory_mb)?;
+            
+            // PPID in light blue
+            stdout.execute(SetForegroundColor(Color::Cyan))?;
+            write!(stdout, "{:>8} ", process.parent_pid.unwrap_or(0))?;
+            
+            // Start time in default color
+            stdout.execute(SetForegroundColor(Color::White))?;
+            write!(stdout, "{:>12} ", process.startTime)?;
+            
+            // Nice value in yellow
+            stdout.execute(SetForegroundColor(Color::Yellow))?;
+            write!(stdout, "{:>8} ", process.nice)?;
+            
+            // User in magenta
+            stdout.execute(SetForegroundColor(Color::Magenta))?;
+            write!(stdout, "{:>12} ", user_display)?;
+            
+            // Status with color based on state
+            let status = process.status.trim();
+            let status_color = match status.to_lowercase().as_str() {
+                "running" => Color::Green,
+                "sleeping" => Color::Blue,
+                "stopped" => Color::Yellow,
+                "zombie" => Color::Red,
+                _ => Color::White,
+            };
+            stdout.execute(SetForegroundColor(status_color))?;
+            writeln!(stdout, "{:>10}", status)?;
+        }
+
+        // Reset color before drawing navigation
+        stdout.execute(ResetColor)?;
+        
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+        
+        // Navigation in cyan
+        stdout.execute(SetForegroundColor(Color::Cyan))?;
+        writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down")?;
+        
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
+        
+        // Back button in blue
+        stdout.execute(SetForegroundColor(Color::Blue))?;
+        writeln!(stdout, "[←] Back")?;
+        
+        // Reset color
+        stdout.execute(ResetColor)?;
+        
+        stdout.flush()?;
+        sleep(Duration::from_millis(100));
     }
+
+    Ok(())
+}

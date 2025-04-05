@@ -1,6 +1,7 @@
 use sysinfo::{ProcessExt, System, SystemExt, PidExt, UserExt};
 use procfs::process::Process as ProcfsProcess; // Import procfs for nice value
 use std::convert::TryInto; // Import the try_into function
+use chrono::{DateTime, Local, TimeZone};
 
 #[derive(Clone)] 
 pub struct ProcessInfo {
@@ -13,6 +14,7 @@ pub struct ProcessInfo {
     pub status: String,
     pub user: Option<String>,
     pub nice: i32, 
+    pub startTime: String,
 }
 
 pub struct ProcessManager {
@@ -41,7 +43,8 @@ impl ProcessManager {
             let nice_value = ProcfsProcess::new(pid_i32)
                 .and_then(|p| p.stat().map(|stat| stat.nice))
                 .unwrap_or(0); // Default to 0 if retrieval fails
-
+            // Format the start time
+            let formatted_time = format_timestamp(process.start_time());
             processes.push(ProcessInfo {
                 pid: pid.as_u32(),
                 name: process.name().to_string(),
@@ -54,6 +57,7 @@ impl ProcessManager {
                     .and_then(|id| self.system.get_user_by_id(id)
                     .map(|user| user.name().to_string())),
                 nice: nice_value as i32, // Correct casting for nice value
+                startTime: formatted_time,
             });
         }
         
@@ -61,5 +65,15 @@ impl ProcessManager {
         processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
         
         processes
+    }
+    
+}
+// Function to format the timestamp
+fn format_timestamp(timestamp: u64) -> String {
+    // The timestamp from sysinfo is usually in seconds since boot
+    // We need to convert it to a DateTime object
+    match Local.timestamp_opt(timestamp as i64, 0) {
+        chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S").to_string(),
+        _ => "00:00:00".to_string() // Fallback if conversion fails
     }
 }

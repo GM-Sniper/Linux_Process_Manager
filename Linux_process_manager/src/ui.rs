@@ -211,13 +211,14 @@ pub fn handle_kill_stop_key_event(
             match key_event.code {
 
                 KeyCode::Char('1') => {
-                  //  draw_kill_menu()?; // Enter kill menu
+                  draw_kill_menu()?; // Enter kill menu
                 }
                 KeyCode::Char('2') => {
-                //    draw_stop_menu()?; //Enter Stop menu 
-
+                  draw_stop_menu()?; //Enter Stop menu 
                 }
                 KeyCode::Backspace => return Ok(true), // Signal to quit
+
+                KeyCode::Char('q') => return Ok(true),
 
                 KeyCode::Up => {
                     if *scroll_offset > 0 {
@@ -254,6 +255,8 @@ pub fn handle_kill_key_event(
                 }
                 KeyCode::Backspace => return Ok(true), // Signal to quit
 
+                KeyCode::Char('q') => return Ok(true),
+
                 KeyCode::Up => {
                     if *scroll_offset > 0 {
                         *scroll_offset -= 1;
@@ -288,6 +291,9 @@ pub fn handle_stop_key_event(
 
                 }
                 KeyCode::Backspace => return Ok(true), // Signal to quit
+
+                KeyCode::Char('q') => return Ok(true),
+
 
                 KeyCode::Up => {
                     if *scroll_offset > 0 {
@@ -968,7 +974,7 @@ pub fn draw_kill_menu() -> std::io::Result<()> {
         
         // Menu option 1 in yellow
         stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "1. Kill")?;
+        write!(stdout, "1. Hello")?;
         
         // Separator
         stdout.execute(ResetColor)?;
@@ -976,7 +982,7 @@ pub fn draw_kill_menu() -> std::io::Result<()> {
         
         // Menu option 2 in green
         stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "2. Stop")?;
+        write!(stdout, "2. Hello")?;
         
         // Separator
         stdout.execute(ResetColor)?;
@@ -1016,7 +1022,7 @@ pub fn draw_stop_menu() -> std::io::Result<()> {
         
         // Menu option 1 in yellow
         stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "1. Kill")?;
+        write!(stdout, "1. Hello")?;
         
         // Separator
         stdout.execute(ResetColor)?;
@@ -1024,7 +1030,7 @@ pub fn draw_stop_menu() -> std::io::Result<()> {
         
         // Menu option 2 in green
         stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "2. Stop")?;
+        write!(stdout, "2. Hello")?;
         
         // Separator
         stdout.execute(ResetColor)?;

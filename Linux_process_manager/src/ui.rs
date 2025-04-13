@@ -236,6 +236,76 @@ pub fn handle_kill_stop_key_event(
     Ok(false)
 }
 
+pub fn handle_kill_key_event(
+    scroll_offset: &mut usize,
+    display_limit: usize,
+    process_len: usize
+) -> std::io::Result<bool> {
+    if event::poll(Duration::from_millis(100))? {
+        if let Event::Key(key_event) = event::read()? {
+            match key_event.code {
+
+                KeyCode::Char('1') => {
+                  //  draw_kill_menu()?; // Enter kill menu
+                }
+                KeyCode::Char('2') => {
+                //    draw_stop_menu()?; //Enter Stop menu 
+
+                }
+                KeyCode::Backspace => return Ok(true), // Signal to quit
+
+                KeyCode::Up => {
+                    if *scroll_offset > 0 {
+                        *scroll_offset -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if *scroll_offset < process_len.saturating_sub(display_limit) {
+                        *scroll_offset += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(false)
+}
+
+pub fn handle_stop_key_event(
+    scroll_offset: &mut usize,
+    display_limit: usize,
+    process_len: usize
+) -> std::io::Result<bool> {
+    if event::poll(Duration::from_millis(100))? {
+        if let Event::Key(key_event) = event::read()? {
+            match key_event.code {
+
+                KeyCode::Char('1') => {
+                  //  draw_kill_menu()?; // Enter kill menu
+                }
+                KeyCode::Char('2') => {
+                //    draw_stop_menu()?; //Enter Stop menu 
+
+                }
+                KeyCode::Backspace => return Ok(true), // Signal to quit
+
+                KeyCode::Up => {
+                    if *scroll_offset > 0 {
+                        *scroll_offset -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if *scroll_offset < process_len.saturating_sub(display_limit) {
+                        *scroll_offset += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(false)
+}
+
 
 pub fn draw_processes(processes: &[ProcessInfo], scroll_offset: usize, display_limit: usize) -> std::io::Result<()> {
     let mut stdout = stdout();
@@ -877,3 +947,99 @@ pub fn draw_kill_stop_menu() -> std::io::Result<()> {
     Ok(())
 }
 
+pub fn draw_kill_menu() -> std::io::Result<()> {
+    let mut stdout = stdout();
+    let mut process_manager = ProcessManager::new(); // Initialize process manager
+    let mut scroll_offset: usize = 0;                // Track scrolling position
+    let display_limit: usize = 20;                   // Number of processes visible at a time
+    let process_len = process_manager.get_processes().len(); // Total number of processes
+
+    loop {
+        process_manager.refresh();
+        let processes = process_manager.get_processes().clone();
+        if handle_kill_key_event(&mut scroll_offset, display_limit, process_len)? 
+        {
+            return Ok(true);
+            break; // Exit loop if 'back space' is pressed
+        }
+
+        draw_processes(&processes, scroll_offset, display_limit)?;
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+        
+        // Menu option 1 in yellow
+        stdout.execute(SetForegroundColor(Color::Yellow))?;
+        write!(stdout, "1. Kill")?;
+        
+        // Separator
+        stdout.execute(ResetColor)?;
+        write!(stdout, "  |  ")?;
+        
+        // Menu option 2 in green
+        stdout.execute(SetForegroundColor(Color::Green))?;
+        write!(stdout, "2. Stop")?;
+        
+        // Separator
+        stdout.execute(ResetColor)?;
+        write!(stdout, "  |  ")?;
+        
+        // Back button in blue
+        stdout.execute(SetForegroundColor(Color::Blue))?;
+        writeln!(stdout, "[←] Back")?;
+        
+        // Reset color
+        stdout.execute(ResetColor)?;
+    }
+
+    stdout.flush()?;
+    sleep(Duration::from_millis(100));
+    
+    Ok(())
+}
+
+pub fn draw_stop_menu() -> std::io::Result<()> {
+    let mut stdout = stdout();
+    let mut process_manager = ProcessManager::new(); // Initialize process manager
+    let mut scroll_offset: usize = 0;                // Track scrolling position
+    let display_limit: usize = 20;                   // Number of processes visible at a time
+    let process_len = process_manager.get_processes().len(); // Total number of processes
+
+    loop {
+        process_manager.refresh();
+        let processes = process_manager.get_processes().clone();
+        if handle_stop_key_event(&mut scroll_offset, display_limit, process_len)? 
+        {
+            break; // Exit loop if 'back space' is pressed
+        }
+
+        draw_processes(&processes, scroll_offset, display_limit)?;
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+        
+        // Menu option 1 in yellow
+        stdout.execute(SetForegroundColor(Color::Yellow))?;
+        write!(stdout, "1. Kill")?;
+        
+        // Separator
+        stdout.execute(ResetColor)?;
+        write!(stdout, "  |  ")?;
+        
+        // Menu option 2 in green
+        stdout.execute(SetForegroundColor(Color::Green))?;
+        write!(stdout, "2. Stop")?;
+        
+        // Separator
+        stdout.execute(ResetColor)?;
+        write!(stdout, "  |  ")?;
+        
+        // Back button in blue
+        stdout.execute(SetForegroundColor(Color::Blue))?;
+        writeln!(stdout, "[←] Back")?;
+        
+        // Reset color
+        stdout.execute(ResetColor)?;
+    }
+
+    stdout.flush()?;
+    sleep(Duration::from_millis(100));
+    
+    Ok(())
+}

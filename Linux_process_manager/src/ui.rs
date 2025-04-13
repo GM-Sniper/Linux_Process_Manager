@@ -338,6 +338,10 @@ pub fn draw_menu(display_limit: usize) -> std::io::Result<()> {
     write!(stdout, "3. Kill/Stop Process")?;
     stdout.execute(ResetColor)?;
     write!(stdout, " |  ")?;
+    stdout.execute(SetForegroundColor(Color::Cyan))?;
+    write!(stdout, "4. Search for a Process")?;
+    stdout.execute(ResetColor)?;
+    write!(stdout, " |  ")?;
     
     stdout.execute(SetForegroundColor(Color::Magenta))?;
     write!(stdout, "[Q] Quit")?;

@@ -959,7 +959,7 @@ pub fn draw_kill_menu() -> std::io::Result<()> {
         let processes = process_manager.get_processes().clone();
         if handle_kill_key_event(&mut scroll_offset, display_limit, process_len)? 
         {
-            return Ok(true);
+          //  return Ok(true)
             break; // Exit loop if 'back space' is pressed
         }
 

@@ -1,4 +1,5 @@
 use crate::process;
+use std::io::{Write, stdin, stdout};
 use crate::process::ProcessInfo;  // ProcessInfo is defined in process.rs
 use std::thread::sleep;
 use std::time::Duration;
@@ -6,14 +7,13 @@ use process::ProcessManager;
 use std::error::Error;
 use crossterm::{
     cursor, execute, terminal, terminal::ClearType,
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEvent},
 };
 use crossterm::{
-    style::{Color, SetForegroundColor, SetBackgroundColor, ResetColor, Attribute, SetAttribute},
+    style::{Color, SetForegroundColor, SetBackgroundColor, ResetColor, Attribute, SetAttribute, Stylize},
     ExecutableCommand, 
     QueueableCommand,
 };
-use std::io::{stdout, Write};
 
 // Setup the terminal (raw mode + alternate screen)
 pub fn setup_terminal() -> std::io::Result<()> {
@@ -81,6 +81,14 @@ pub fn handle_key_event(
                 KeyCode::Char('1') => {
                     draw_filter_menu()?; // Enter filter menu
                 }
+                KeyCode::Char('2') => {
+                    // changing niceness
+                    change_process_niceness()?;
+                    
+                }
+                KeyCode::Char('3') => {
+                    // Placeholder for killing/stopping process
+                }
                 _ => {}
             }
         }
@@ -101,9 +109,9 @@ pub fn handle_filter_key_event(
                     draw_sort_menu()?; // Enter sort menu
                 }
                 KeyCode::Char('2') => {
-                    // TODO: Enter Filter menu
-                }
+                    // Placeholder for filtering processes
 
+                }
                 KeyCode::Backspace => return Ok(true), // Signal to quit
 
                 KeyCode::Up => {
@@ -322,7 +330,7 @@ pub fn draw_menu(display_limit: usize) -> std::io::Result<()> {
     write!(stdout, "  |  ")?;
     
     stdout.execute(SetForegroundColor(Color::Green))?;
-    write!(stdout, "2. Change Priority")?;
+    write!(stdout, "2. Change Niceness")?;
     stdout.execute(ResetColor)?;
     write!(stdout, "  |  ")?;
     
@@ -598,3 +606,182 @@ pub fn draw_sorted_processes(display_limit: usize, sort_mode: &str) -> std::io::
 
     Ok(())
 }
+fn change_process_niceness() -> std::io::Result<()> {
+    let mut stdout = stdout();
+    let mut process_manager = ProcessManager::new();
+    let mut scroll_offset: usize = 0;
+    let display_limit: usize = 20;
+    
+    // Input state variables
+    let mut pid_input = String::new();
+    let mut input_mode = true; // true = collecting PID, false = collecting nice value
+    let mut nice_input = String::new();
+    let mut message = String::new();
+    let mut message_is_error = false;
+    let mut show_message_until = std::time::Instant::now();
+    
+    loop {
+        // Refresh process list
+        process_manager.refresh();
+        let processes = process_manager.get_processes();
+        
+        // Draw processes
+        draw_processes(&processes, scroll_offset, display_limit)?;
+        
+        // Draw input prompts - always show both prompts
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+        
+        // PID input prompt (always shown)
+        stdout.execute(SetForegroundColor(Color::Green))?;
+        write!(stdout, "Enter PID to change niceness (or 'q' to quit): ")?;
+        
+        if input_mode {
+            // Highlight active input field
+            stdout.execute(SetForegroundColor(Color::White))?;
+            stdout.execute(SetAttribute(Attribute::Bold))?;
+        } else {
+            // Dim inactive input field
+            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+        }
+        
+        write!(stdout, "{}", pid_input)?;
+        stdout.execute(SetAttribute(Attribute::Reset))?;
+        
+        // Nice value prompt (always shown on next line)
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
+        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+        
+        stdout.execute(SetForegroundColor(Color::Green))?;
+        write!(stdout, "Enter new nice value (0-19, or -20 to -1 for root), or 'q' to cancel: ")?;
+        
+        if !input_mode {
+            // Highlight active input field
+            stdout.execute(SetForegroundColor(Color::White))?;
+            stdout.execute(SetAttribute(Attribute::Bold))?;
+        } else {
+            // Dim inactive input field
+            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
+        }
+        
+        write!(stdout, "{}", nice_input)?;
+        stdout.execute(SetAttribute(Attribute::Reset))?;
+        
+        // Show message if needed
+        if std::time::Instant::now() < show_message_until {
+            execute!(stdout, cursor::MoveTo(0, (display_limit + 4) as u16))?;
+            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+            
+            if message_is_error {
+                // Error message in red
+                stdout.execute(SetForegroundColor(Color::Red))?;
+            } else {
+                // Success message in green
+                stdout.execute(SetForegroundColor(Color::Green))?;
+            }
+            
+            write!(stdout, "{}", message)?;
+            stdout.execute(SetForegroundColor(Color::Reset))?;
+        }
+        
+        stdout.flush()?;
+        
+        // Handle input events
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                // Handle quit
+                Event::Key(KeyEvent { code: KeyCode::Char('q'), .. }) => {
+                    if input_mode {
+                        return Ok(());  // Return to main menu
+                    } else {
+                        // Return to PID input mode
+                        input_mode = true;
+                        nice_input.clear();
+                    }
+                },
+                
+                // Handle scrolling
+                Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
+                    if scroll_offset > 0 {
+                        scroll_offset -= 1;
+                    }
+                },
+                Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
+                    if scroll_offset < processes.len().saturating_sub(display_limit) {
+                        scroll_offset += 1;
+                    }
+                },
+                
+                // Handle backspace
+                Event::Key(KeyEvent { code: KeyCode::Backspace, .. }) => {
+                    if input_mode {
+                        pid_input.pop();
+                    } else {
+                        nice_input.pop();
+                    }
+                },
+                
+                // Handle enter
+                Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
+                    if input_mode {
+                        // Process PID input
+                        match pid_input.trim().parse::<u32>() {
+                            Ok(_pid) => {
+                                // Switch to nice value input mode
+                                input_mode = false;
+                            },
+                            Err(_) => {
+                                message = "Invalid PID format. Please try again.".to_string();
+                                message_is_error = true;
+                                show_message_until = std::time::Instant::now() + Duration::from_secs(2);
+                                pid_input.clear();
+                            }
+                        }
+                    } else {
+                        // Process nice value input
+                        match nice_input.trim().parse::<i32>() {
+                            Ok(nice) if nice >= -20 && nice <= 19 => {
+                                let pid = pid_input.trim().parse::<u32>().unwrap(); // Safe because we validated earlier
+                                
+                                // Try to set niceness
+                                match process_manager.set_niceness(pid, nice) {
+                                    Ok(_) => {
+                                        message = format!("Successfully changed niceness of process {} to {}", pid, nice);
+                                        message_is_error = false;
+                                    },
+                                    Err(e) => {
+                                        message = format!("Error: {}", e);
+                                        message_is_error = true;
+                                    }
+                                }
+                                
+                                show_message_until = std::time::Instant::now() + Duration::from_secs(2);
+                                pid_input.clear();
+                                nice_input.clear();
+                                input_mode = true; // Return to PID input mode
+                            },
+                            _ => {
+                                message = "Invalid nice value. Must be between -20 and 19.".to_string();
+                                message_is_error = true;
+                                show_message_until = std::time::Instant::now() + Duration::from_secs(2);
+                                nice_input.clear();
+                            }
+                        }
+                    }
+                },
+                
+                // Handle character input
+                Event::Key(KeyEvent { code: KeyCode::Char(c), .. }) => {
+                    if input_mode {
+                        pid_input.push(c);
+                    } else {
+                        nice_input.push(c);
+                    }
+                },
+                
+                _ => {}
+            }
+        }
+    }
+}
+

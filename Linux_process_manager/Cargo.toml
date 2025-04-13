@@ -9,3 +9,5 @@ tokio = { version = "1.28.0", features = ["full"] }  # For async runtime
 crossterm = "0.26.0"  # For terminal handling
 procfs = "0.16" # For getting the nice of a system
 chrono = "0.4" # For formatting the start time
+libc = "0.2" # Setting the niceness
+anyhow = "1.0" # Some debugging?

@@ -2,6 +2,7 @@ use sysinfo::{ProcessExt, System, SystemExt, PidExt, UserExt};
 use procfs::process::Process as ProcfsProcess; // Import procfs for nice value
 use std::convert::TryInto; // Import the try_into function
 use chrono::{DateTime, Local, TimeZone};
+use libc::{self, c_int};
 
 #[derive(Clone)] 
 pub struct ProcessInfo {
@@ -65,6 +66,33 @@ impl ProcessManager {
         processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
         
         processes
+    }
+    pub fn set_niceness(&self, pid: u32, nice: i32) -> std::io::Result<()> {
+        // Validate niceness range
+        if nice < -20 || nice > 19 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Nice value must be between -20 and 19"
+            ));
+        }
+
+        // Check privileges if setting negative nice
+        if nice < 0 && unsafe { libc::geteuid() } != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Root privileges required for negative nice values (use sudo)"
+            ));
+        }
+        let temp_pid: libc::id_t = pid;
+
+        // SAFETY: This is safe because we're passing valid arguments
+        let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, temp_pid, nice as c_int) };
+        
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(())
     }
     
 }

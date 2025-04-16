@@ -586,10 +586,24 @@ pub fn draw_sorted_processes(display_limit: usize, sort_mode: &str) -> std::io::
     let mut scroll_offset: usize = 0;
     let mut ascending = true;
 
+    
+
+
 
     loop {
         process_manager.refresh();
         let mut processes = process_manager.get_processes().clone();
+        let arrow = if ascending { "▲" } else { "▼" };
+        let pid_label = if sort_mode == "pid" { format!("PID{}", arrow) } else { "PID".to_string() };
+        let name_label = "NAME"; // not sortable
+        let cpu_label = "CPU%";  // not sortable
+        let mem_label = if sort_mode == "mem" { format!("MEM(MB){}", arrow) } else { "MEM(MB)".to_string() };
+        let ppid_label = if sort_mode == "ppid" { format!("PPID{}", arrow) } else { "PPID".to_string() };
+        let start_label = if sort_mode == "start" { format!("START{}", arrow) } else { "START".to_string() };
+        let nice_label = if sort_mode == "nice" { format!("NICE{}", arrow) } else { "NICE".to_string() };
+        let user_label = "USER";
+        let status_label = "STATUS";
+
 
         // Apply sorting based on sort_mode
         match sort_mode {
@@ -646,8 +660,9 @@ pub fn draw_sorted_processes(display_limit: usize, sort_mode: &str) -> std::io::
         writeln!(
             stdout,
             "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>8} {:>12} {:>10}",
-            "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "NICE", "USER", "STATUS",
+            pid_label, name_label, cpu_label, mem_label, ppid_label, start_label, nice_label, user_label, status_label,
         )?;
+        
         
         // Reset colors and styling
         stdout.execute(ResetColor)?;

@@ -178,12 +178,14 @@ pub fn handle_sort_key_event(
 pub fn handle_ssort_key_event(
     scroll_offset: &mut usize,
     display_limit: usize,
+    ascending: &mut bool,
     process_len: usize
 ) -> std::io::Result<bool> {
     if event::poll(Duration::from_millis(100))? {
         if let Event::Key(key_event) = event::read()? {
             match key_event.code {
                 KeyCode::Backspace => return Ok(true), // Signal to quit
+                KeyCode::Char('a') => *ascending = !*ascending,
                 KeyCode::Up => {
                     if *scroll_offset > 0 {
                         *scroll_offset -= 1;
@@ -582,6 +584,8 @@ pub fn draw_sorted_processes(display_limit: usize, sort_mode: &str) -> std::io::
     let mut stdout = stdout();
     let mut process_manager = ProcessManager::new();
     let mut scroll_offset: usize = 0;
+    let mut ascending = true;
+
 
     loop {
         process_manager.refresh();
@@ -589,15 +593,45 @@ pub fn draw_sorted_processes(display_limit: usize, sort_mode: &str) -> std::io::
 
         // Apply sorting based on sort_mode
         match sort_mode {
-            "pid" => processes.sort_by_key(|p| p.pid),
-            "ppid" => processes.sort_by_key(|p| p.parent_pid.unwrap_or(0)),
-            "mem" => processes.sort_by(|a, b| b.memory_usage.cmp(&a.memory_usage)),
-            "start" => processes.sort_by(|a, b| a.start_time.cmp(&b.start_time)),
-            "nice" => processes.sort_by_key(|p| p.nice),
-            _ => {} // default: no sort
+            "pid" => {
+                if ascending {
+                    processes.sort_by_key(|p| p.pid);
+                } else {
+                    processes.sort_by_key(|p| std::cmp::Reverse(p.pid));
+                }
+            }
+            "ppid" => {
+                if ascending {
+                    processes.sort_by_key(|p| p.parent_pid.unwrap_or(0));
+                } else {
+                    processes.sort_by_key(|p| std::cmp::Reverse(p.parent_pid.unwrap_or(0)));
+                }
+            }
+            "mem" => {
+                if ascending {
+                    processes.sort_by(|a, b| a.memory_usage.cmp(&b.memory_usage));
+                } else {
+                    processes.sort_by(|a, b| b.memory_usage.cmp(&a.memory_usage));
+                }
+            }
+            "start" => {
+                if ascending {
+                    processes.sort_by(|a, b| a.start_time.cmp(&b.start_time));
+                } else {
+                    processes.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+                }
+            }
+            "nice" => {
+                if ascending {
+                    processes.sort_by_key(|p| p.nice);
+                } else {
+                    processes.sort_by_key(|p| std::cmp::Reverse(p.nice));
+                }
+            }
+            _ => {}
         }
 
-        if handle_ssort_key_event(&mut scroll_offset, display_limit, processes.len())? {
+        if handle_ssort_key_event(&mut scroll_offset, display_limit, &mut ascending, processes.len())? {
             break;
         }
 

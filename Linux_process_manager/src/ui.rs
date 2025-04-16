@@ -211,10 +211,10 @@ pub fn handle_kill_stop_key_event(
             match key_event.code {
 
                 KeyCode::Char('1') => {
-                  draw_kill_menu()?; // Enter kill menu
+                  kill_process()?; // Enter kill menu
                 }
                 KeyCode::Char('2') => {
-                  draw_stop_menu()?; //Enter Stop menu 
+                  stop_process()?; //Enter Stop menu 
                 }
                 KeyCode::Backspace => return Ok(true), // Signal to quit
 
@@ -905,6 +905,7 @@ fn change_process_niceness() -> std::io::Result<()> {
     }
 }
 
+
 pub fn draw_kill_stop_menu() -> std::io::Result<()> {
     let mut stdout = stdout();
     let mut process_manager = ProcessManager::new(); // Initialize process manager
@@ -953,99 +954,241 @@ pub fn draw_kill_stop_menu() -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn draw_kill_menu() -> std::io::Result<()> {
+
+
+
+fn stop_process() -> std::io::Result<()> {
     let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new(); // Initialize process manager
-    let mut scroll_offset: usize = 0;                // Track scrolling position
-    let display_limit: usize = 20;                   // Number of processes visible at a time
-    let process_len = process_manager.get_processes().len(); // Total number of processes
-
-    loop {
-        process_manager.refresh();
-        let processes = process_manager.get_processes().clone();
-        if handle_kill_key_event(&mut scroll_offset, display_limit, process_len)? 
-        {
-          //  return Ok(true)
-            break; // Exit loop if 'back space' is pressed
-        }
-
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        
-        // Menu option 1 in yellow
-        stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "1. Hello")?;
-        
-        // Separator
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Menu option 2 in green
-        stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "2. Hello")?;
-        
-        // Separator
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Back button in blue
-        stdout.execute(SetForegroundColor(Color::Blue))?;
-        writeln!(stdout, "[←] Back")?;
-        
-        // Reset color
-        stdout.execute(ResetColor)?;
-    }
-
-    stdout.flush()?;
-    sleep(Duration::from_millis(100));
+    let mut process_manager = ProcessManager::new();
+    let mut scroll_offset: usize = 0;
+    let display_limit: usize = 20;
     
-    Ok(())
+    // Input state variables
+    let mut pid_input = String::new();
+    let mut message = String::new();
+    let mut message_is_error = false;
+    let mut show_message_until = std::time::Instant::now();
+    
+    loop {
+        // Refresh process list
+        process_manager.refresh();
+        let processes = process_manager.get_processes();
+        
+        // Draw processes
+        draw_processes(&processes, scroll_offset, display_limit)?;
+        
+        // Draw input prompt
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+        
+        // PID input prompt
+        stdout.execute(SetForegroundColor(Color::Yellow))?;
+        write!(stdout, "Enter PID to stop (or 'q' to quit): ")?;
+        
+        // Highlight input field
+        stdout.execute(SetForegroundColor(Color::White))?;
+        stdout.execute(SetAttribute(Attribute::Bold))?;
+        write!(stdout, "{}", pid_input)?;
+        stdout.execute(SetAttribute(Attribute::Reset))?;
+        
+        // Show message if needed
+        if std::time::Instant::now() < show_message_until {
+            execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
+            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+            
+            if message_is_error {
+                // Error message in red
+                stdout.execute(SetForegroundColor(Color::Red))?;
+            } else {
+                // Success message in green
+                stdout.execute(SetForegroundColor(Color::Green))?;
+            }
+            
+            write!(stdout, "{}", message)?;
+            stdout.execute(SetForegroundColor(Color::Reset))?;
+        }
+        
+        stdout.flush()?;
+        
+        // Handle input events
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                // Handle quit
+                Event::Key(KeyEvent { code: KeyCode::Char('q'), .. }) => {
+                    return Ok(());  // Return to main menu
+                },
+                
+                // Handle scrolling
+                Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
+                    if scroll_offset > 0 {
+                        scroll_offset -= 1;
+                    }
+                },
+                Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
+                    if scroll_offset < processes.len().saturating_sub(display_limit) {
+                        scroll_offset += 1;
+                    }
+                },
+                
+                // Handle backspace
+                Event::Key(KeyEvent { code: KeyCode::Backspace, .. }) => {
+                    pid_input.pop();
+                },
+                
+                // Handle enter
+                Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
+                    match pid_input.trim().parse::<u32>() {
+                        Ok(pid) => {
+                            // Try to stop the process
+                            match process_manager.stop_process(pid) {
+                                Ok(_) => {
+                                    message = format!("Successfully stopped process {}", pid);
+                                    message_is_error = false;
+                                },
+                                Err(e) => {
+                                    message = format!("Error: {}", e);
+                                    message_is_error = true;
+                                }
+                            }
+                            
+                            show_message_until = std::time::Instant::now() + Duration::from_secs(2);
+                            pid_input.clear();
+                        },
+                        Err(_) => {
+                            message = "Invalid PID format. Please try again.".to_string();
+                            message_is_error = true;
+                            show_message_until = std::time::Instant::now() + Duration::from_secs(2);
+                            pid_input.clear();
+                        }
+                    }
+                },
+                
+                // Handle character input
+                Event::Key(KeyEvent { code: KeyCode::Char(c), .. }) => {
+                    pid_input.push(c);
+                },
+                
+                _ => {}
+            }
+        }
+    }
 }
 
-pub fn draw_stop_menu() -> std::io::Result<()> {
+
+
+fn kill_process() -> std::io::Result<()> {
     let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new(); // Initialize process manager
-    let mut scroll_offset: usize = 0;                // Track scrolling position
-    let display_limit: usize = 20;                   // Number of processes visible at a time
-    let process_len = process_manager.get_processes().len(); // Total number of processes
-
-    loop {
-        process_manager.refresh();
-        let processes = process_manager.get_processes().clone();
-        if handle_stop_key_event(&mut scroll_offset, display_limit, process_len)? 
-        {
-            break; // Exit loop if 'back space' is pressed
-        }
-
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        
-        // Menu option 1 in yellow
-        stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "1. Hello")?;
-        
-        // Separator
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Menu option 2 in green
-        stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "2. Hello")?;
-        
-        // Separator
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Back button in blue
-        stdout.execute(SetForegroundColor(Color::Blue))?;
-        writeln!(stdout, "[←] Back")?;
-        
-        // Reset color
-        stdout.execute(ResetColor)?;
-    }
-
-    stdout.flush()?;
-    sleep(Duration::from_millis(100));
+    let mut process_manager = ProcessManager::new();
+    let mut scroll_offset: usize = 0;
+    let display_limit: usize = 20;
     
-    Ok(())
+    // Input state variables
+    let mut pid_input = String::new();
+    let mut message = String::new();
+    let mut message_is_error = false;
+    let mut show_message_until = std::time::Instant::now();
+    
+    loop {
+        // Refresh process list
+        process_manager.refresh();
+        let processes = process_manager.get_processes();
+        
+        // Draw processes
+        draw_processes(&processes, scroll_offset, display_limit)?;
+        
+        // Draw input prompt
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+        
+        // PID input prompt
+        stdout.execute(SetForegroundColor(Color::Red))?;
+        write!(stdout, "Enter PID to kill (or 'q' to quit): ")?;
+        
+        // Highlight input field
+        stdout.execute(SetForegroundColor(Color::White))?;
+        stdout.execute(SetAttribute(Attribute::Bold))?;
+        write!(stdout, "{}", pid_input)?;
+        stdout.execute(SetAttribute(Attribute::Reset))?;
+        
+        // Show message if needed
+        if std::time::Instant::now() < show_message_until {
+            execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
+            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
+            
+            if message_is_error {
+                // Error message in red
+                stdout.execute(SetForegroundColor(Color::Red))?;
+            } else {
+                // Success message in green
+                stdout.execute(SetForegroundColor(Color::Green))?;
+            }
+            
+            write!(stdout, "{}", message)?;
+            stdout.execute(SetForegroundColor(Color::Reset))?;
+        }
+        
+        stdout.flush()?;
+        
+        // Handle input events
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                // Handle quit
+                Event::Key(KeyEvent { code: KeyCode::Char('q'), .. }) => {
+                    return Ok(());  // Return to main menu
+                },
+                
+                // Handle scrolling
+                Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
+                    if scroll_offset > 0 {
+                        scroll_offset -= 1;
+                    }
+                },
+                Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
+                    if scroll_offset < processes.len().saturating_sub(display_limit) {
+                        scroll_offset += 1;
+                    }
+                },
+                
+                // Handle backspace
+                Event::Key(KeyEvent { code: KeyCode::Backspace, .. }) => {
+                    pid_input.pop();
+                },
+                
+                // Handle enter
+                Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
+                    match pid_input.trim().parse::<u32>() {
+                        Ok(pid) => {
+                            // Try to kill the process
+                            match process_manager.kill_process(pid) {
+                                Ok(_) => {
+                                    message = format!("Successfully killed process {}", pid);
+                                    message_is_error = false;
+                                },
+                                Err(e) => {
+                                    message = format!("Error: {}", e);
+                                    message_is_error = true;
+                                }
+                            }
+                            
+                            show_message_until = std::time::Instant::now() + Duration::from_secs(2);
+                            pid_input.clear();
+                        },
+                        Err(_) => {
+                            message = "Invalid PID format. Please try again.".to_string();
+                            message_is_error = true;
+                            show_message_until = std::time::Instant::now() + Duration::from_secs(2);
+                            pid_input.clear();
+                        }
+                    }
+                },
+                
+                // Handle character input
+                Event::Key(KeyEvent { code: KeyCode::Char(c), .. }) => {
+                    pid_input.push(c);
+                },
+                
+                _ => {}
+            }
+        }
+    }
 }

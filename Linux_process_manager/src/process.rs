@@ -94,6 +94,38 @@ impl ProcessManager {
 
         Ok(())
     }
+
+    pub fn stop_process(&self, pid: u32) -> std::io::Result<()> {
+        use libc::{kill, pid_t, SIGSTOP};
+        
+        let temp_pid: pid_t = pid as pid_t;
+        
+        // SAFETY: This is safe because we're passing valid arguments
+        let result = unsafe { kill(temp_pid, SIGSTOP) };
+        
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        
+        Ok(())
+    }
+    
+
+    pub fn kill_process(&self, pid: u32) -> std::io::Result<()> {
+        use libc::{kill, pid_t, SIGKILL};
+        
+        let temp_pid: pid_t = pid as pid_t;
+        
+        // SAFETY: This is safe because we're passing valid arguments
+        let result = unsafe { kill(temp_pid, SIGKILL) };
+        
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        
+        Ok(())
+    }
+    
     
 }
 // Function to format the timestamp

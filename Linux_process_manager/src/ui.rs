@@ -9,6 +9,8 @@ use crossterm::{
     cursor, execute, terminal, terminal::ClearType,
     event::{self, Event, KeyCode, KeyEvent},
 };
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
 use crossterm::{
     style::{Color, SetForegroundColor, SetBackgroundColor, ResetColor, Attribute, SetAttribute, Stylize},
     ExecutableCommand, 
@@ -79,7 +81,7 @@ pub fn handle_key_event(
                     }
                 }
                 KeyCode::Char('1') => {
-                    draw_filter_menu()?; // Enter filter menu
+                    draw_filterSort_menu()?; // Enter filter menu
                 }
                 KeyCode::Char('2') => {
                     // changing niceness
@@ -110,11 +112,48 @@ pub fn handle_filter_key_event(
                     draw_sort_menu()?; // Enter sort menu
                 }
                 KeyCode::Char('2') => {
-                    // Placeholder for filtering processes
-
+                    draw_filter_menu()?;
                 }
                 KeyCode::Backspace => return Ok(true), // Signal to quit
 
+                KeyCode::Up => {
+                    if *scroll_offset > 0 {
+                        *scroll_offset -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if *scroll_offset < process_len.saturating_sub(display_limit) {
+                        *scroll_offset += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(false)
+}
+
+pub fn handle_ffilter_key_event(
+    scroll_offset: &mut usize,
+    display_limit: usize,
+    process_len: usize
+) -> std::io::Result<bool> {
+    if event::poll(Duration::from_millis(100))? {
+        if let Event::Key(key_event) = event::read()? {
+            match key_event.code {
+                KeyCode::Backspace => return Ok(true), // Signal to quit
+                KeyCode::Char('1') => {
+                    draw_filtered_processes(20, "user")?; // Enter filtered menu
+                }
+                KeyCode::Char('2') => {
+                    draw_filtered_processes(20, "name")?; // Enter filtered menu
+                }
+                KeyCode::Char('3') => {
+                    draw_filtered_processes(20, "pid")?;                   // Enter filtered menu
+                }
+                KeyCode::Char('4') => {
+                    draw_filtered_processes(20, "ppid")?;// Enter filtered menu
+                }
                 KeyCode::Up => {
                     if *scroll_offset > 0 {
                         *scroll_offset -= 1;
@@ -467,7 +506,7 @@ pub fn draw_menu(display_limit: usize) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn draw_filter_menu() -> std::io::Result<()> {
+pub fn draw_filterSort_menu() -> std::io::Result<()> {
     let mut stdout = stdout();
     let mut process_manager = ProcessManager::new(); // Initialize process manager
     let mut scroll_offset: usize = 0;                // Track scrolling position
@@ -577,6 +616,64 @@ pub fn draw_sort_menu() -> std::io::Result<()> {
     
     stdout.flush()?;
     sleep(Duration::from_millis(100));
+    Ok(())
+}
+pub fn draw_filter_menu() -> std::io::Result<()> {
+    let mut stdout = stdout();
+    let mut process_manager = ProcessManager::new(); // Initialize process manager
+    let mut scroll_offset: usize = 0;                // Track scrolling position
+    let display_limit: usize = 20;                   // Number of processes visible at a time
+    let process_len = process_manager.get_processes().len(); // Total number of processes
+
+    loop {
+        process_manager.refresh();
+        let processes = process_manager.get_processes().clone();
+
+        if handle_ffilter_key_event(&mut scroll_offset, display_limit, process_len)? {
+            break; // Exit loop if 'q' or 'Backspace' is pressed
+        }
+
+        draw_processes(&processes, scroll_offset, display_limit)?;
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+
+        // Option 1 - Filter by User
+        stdout.execute(SetForegroundColor(Color::Magenta))?;
+        write!(stdout, "1. Filter by User")?;
+
+        stdout.execute(ResetColor)?;
+        write!(stdout, "  |  ")?;
+
+        // Option 2 - Filter by Name
+        stdout.execute(SetForegroundColor(Color::Green))?;
+        write!(stdout, "2. Filter by Name")?;
+
+        stdout.execute(ResetColor)?;
+        write!(stdout, "  |  ")?;
+
+        // Option 3 - Filter by PID
+        stdout.execute(SetForegroundColor(Color::Cyan))?;
+        write!(stdout, "3. Filter by PID")?;
+
+        stdout.execute(ResetColor)?;
+        write!(stdout, "  |  ")?;
+
+        // Option 4 - Filter by PPID
+        stdout.execute(SetForegroundColor(Color::Yellow))?;
+        write!(stdout, "4. Filter by PPID")?;
+
+        stdout.execute(ResetColor)?;
+        write!(stdout, "  |  ")?;
+
+        // Back button
+        stdout.execute(SetForegroundColor(Color::Blue))?;
+        writeln!(stdout, "[←] Back")?;
+
+        // Reset colors
+        stdout.execute(ResetColor)?;
+        stdout.flush()?;
+        sleep(Duration::from_millis(100));
+    }
+
     Ok(())
 }
 
@@ -952,6 +1049,149 @@ fn change_process_niceness() -> std::io::Result<()> {
             }
         }
     }
+}
+pub fn draw_filtered_processes(display_limit: usize, filter_mode: &str) -> std::io::Result<()> {
+    let mut stdout = stdout();
+    let mut process_manager = ProcessManager::new();
+    let mut scroll_offset: usize = 0;
+
+    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+
+    // Leave raw mode so input works
+    disable_raw_mode()?;
+    
+    // Prompt and read
+    print!("Enter value to filter by ({}): ", filter_mode);
+    stdout.flush()?;
+    let mut filter_value = String::new();
+    std::io::stdin().read_line(&mut filter_value)?;
+    let filter_value = filter_value.trim().to_string();
+    
+    // Re-enter raw mode for UI control
+    enable_raw_mode()?;
+
+    loop {
+        process_manager.refresh();
+        let processes = process_manager.get_processes().clone();
+
+        // Apply filtering based on filter_mode
+        let filtered: Vec<ProcessInfo> = processes
+            .into_iter()
+            .filter(|p| match filter_mode {
+                "user" => p.user.as_deref().unwrap_or("").contains(&filter_value),
+                "name" => p.name.contains(&filter_value),
+                "pid" => filter_value.parse::<u32>().map_or(false, |v| p.pid == v),
+                "ppid" => filter_value.parse::<u32>().map_or(false, |v| p.parent_pid.unwrap_or(0) == v),
+                _ => true,
+            })
+            .collect();
+
+        if handle_ssort_key_event(&mut scroll_offset, display_limit, &mut true, filtered.len())? {
+            break;
+        }
+
+        // Draw UI
+        execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+        stdout.execute(SetAttribute(Attribute::Bold))?;
+        stdout.execute(SetForegroundColor(Color::White))?;
+        stdout.execute(SetBackgroundColor(Color::DarkGreen))?;
+
+        writeln!(
+            stdout,
+            "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>8} {:>12} {:>10}",
+            "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "NICE", "USER", "STATUS",
+        )?;
+
+        stdout.execute(ResetColor)?;
+        stdout.execute(SetAttribute(Attribute::Reset))?;
+
+        let start_index = scroll_offset;
+        let end_index = (scroll_offset + display_limit).min(filtered.len());
+
+        for (i, process) in filtered.iter().enumerate().take(end_index).skip(start_index) {
+            execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
+
+            let name = if process.name.len() > 15 {
+                format!("{:.12}...", process.name)
+            } else {
+                process.name.clone()
+            };
+
+            let user = process.user.clone().unwrap_or_default();
+            let user_display = if user.len() > 10 {
+                format!("{:.7}...", user)
+            } else {
+                user
+            };
+
+            let memory_mb = process.memory_usage / (1024 * 1024);
+
+            if i % 2 == 0 {
+                stdout.execute(SetForegroundColor(Color::Cyan))?;
+            } else {
+                stdout.execute(SetForegroundColor(Color::Blue))?;
+            }
+
+            write!(stdout, "{:<6} ", process.pid)?;
+            stdout.execute(SetForegroundColor(Color::Green))?;
+            write!(stdout, "{:<18} ", name)?;
+
+            let cpu_color = match process.cpu_usage {
+                c if c > 50.0 => Color::Red,
+                c if c > 25.0 => Color::Yellow,
+                _ => Color::Green,
+            };
+            stdout.execute(SetForegroundColor(cpu_color))?;
+            write!(stdout, "{:>6.2} ", process.cpu_usage)?;
+
+            let mem_color = match memory_mb {
+                m if m > 1000 => Color::Red,
+                m if m > 500 => Color::Yellow,
+                _ => Color::Green,
+            };
+            stdout.execute(SetForegroundColor(mem_color))?;
+            write!(stdout, "{:>10} ", memory_mb)?;
+
+            stdout.execute(SetForegroundColor(Color::Cyan))?;
+            write!(stdout, "{:>8} ", process.parent_pid.unwrap_or(0))?;
+
+            stdout.execute(SetForegroundColor(Color::White))?;
+            write!(stdout, "{:>12} ", process.startTime)?;
+
+            stdout.execute(SetForegroundColor(Color::Yellow))?;
+            write!(stdout, "{:>8} ", process.nice)?;
+
+            stdout.execute(SetForegroundColor(Color::Magenta))?;
+            write!(stdout, "{:>12} ", user_display)?;
+
+            let status = process.status.trim();
+            let status_color = match status.to_lowercase().as_str() {
+                "running" => Color::Green,
+                "sleeping" => Color::Blue,
+                "stopped" => Color::Yellow,
+                "zombie" => Color::Red,
+                _ => Color::White,
+            };
+            stdout.execute(SetForegroundColor(status_color))?;
+            writeln!(stdout, "{:>10}", status)?;
+        }
+
+        // Footer
+        stdout.execute(ResetColor)?;
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
+        stdout.execute(SetForegroundColor(Color::Cyan))?;
+        writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down")?;
+
+        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
+        stdout.execute(SetForegroundColor(Color::Blue))?;
+        writeln!(stdout, "[←] Back")?;
+
+        stdout.execute(ResetColor)?;
+        stdout.flush()?;
+        sleep(Duration::from_millis(100));
+    }
+
+    Ok(())
 }
 
 

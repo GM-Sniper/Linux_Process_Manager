@@ -1,21 +1,109 @@
 use crate::process;
-use std::io::{Write, stdin, stdout};
-use crate::process::ProcessInfo;  // ProcessInfo is defined in process.rs
+use crate::graph;
+use std::io::stdout;
 use std::thread::sleep;
 use std::time::Duration;
 use process::ProcessManager;
 use std::error::Error;
-use crossterm::{
-    cursor, execute, terminal, terminal::ClearType,
-    event::{self, Event, KeyCode, KeyEvent},
-};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 
 use crossterm::{
-    style::{Color, SetForegroundColor, SetBackgroundColor, ResetColor, Attribute, SetAttribute, Stylize},
-    ExecutableCommand, 
-    QueueableCommand,
+    event::{self, Event, KeyCode, KeyEvent},
+    terminal::{self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    execute,
 };
+
+use ratatui::{
+    prelude::*,
+    widgets::{
+        Block, Borders, List, ListItem, Paragraph, Table, Row, Cell,
+        Cell as TableCell,  // Alias to avoid conflict with std::cell::Cell
+    },
+    layout::{Layout, Constraint, Direction, Alignment},
+    style::{Style, Modifier, Color},
+    text::{Line, Span},
+    Frame,
+};
+
+// ViewMode enum to track current view
+#[derive(PartialEq)]
+enum ViewMode {
+    ProcessList,
+    GraphView,
+    FilterSort,
+    Sort,
+    Filter,
+    FilterInput,
+    KillStop,
+    ChangeNice,
+}
+
+// Input state for various operations
+struct InputState {
+    pid_input: String,
+    nice_input: String,
+    filter_input: String,
+    message: Option<(String, bool)>, // (message, is_error)
+    message_timeout: Option<std::time::Instant>,
+    nice_history: Vec<String>,  // New field for tracking nice change steps
+}
+
+impl Default for InputState {
+    fn default() -> Self {
+        Self {
+            pid_input: String::new(),
+            nice_input: String::new(),
+            filter_input: String::new(),
+            message: None,
+            message_timeout: None,
+            nice_history: Vec::new(),
+        }
+    }
+}
+
+// NiceInputState enum to track the state of nice value input
+#[derive(PartialEq)]
+enum NiceInputState {
+    SelectingPid,
+    EnteringNice,
+}
+
+// App state
+struct App {
+    process_manager: ProcessManager,
+    graph_data: graph::GraphData,
+    view_mode: ViewMode,
+    scroll_offset: usize,
+    display_limit: usize,
+    input_state: InputState,
+    sort_ascending: bool,
+    sort_mode: Option<String>,
+    filter_mode: Option<String>,
+    stats_scroll_offset: usize,  // New field for statistics scrolling
+    nice_input_state: NiceInputState,  // Track which input we're currently handling
+}
+
+impl App {
+    fn new() -> Self {
+        Self {
+            process_manager: ProcessManager::new(),
+            graph_data: graph::GraphData::new(60, 500),
+            view_mode: ViewMode::ProcessList,
+            scroll_offset: 0,
+            display_limit: 20,
+            input_state: InputState::default(),
+            sort_ascending: true,
+            sort_mode: None,
+            filter_mode: None,
+            stats_scroll_offset: 0,  // Initialize stats scroll offset
+            nice_input_state: NiceInputState::SelectingPid,
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.process_manager.refresh();
+        self.graph_data.update(&self.process_manager);
+    }
+}
 
 // Setup the terminal (raw mode + alternate screen)
 pub fn setup_terminal() -> std::io::Result<()> {
@@ -35,1449 +123,1006 @@ pub fn restore_terminal() -> std::io::Result<()> {
 
 //ui_renderer
 pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
-    setup_terminal()?; // Setup terminal for raw mode and alternate screen
-
-    let mut process_manager = ProcessManager::new(); // Initialize process manager
-    let mut scroll_offset: usize = 0;                // Track scrolling position
-    let display_limit: usize = 20;                   // Number of processes visible at a time
-    let process_len = process_manager.get_processes().len(); // Total number of processes
-
-    loop {
-        // Handle key press events
-        if handle_key_event(&mut scroll_offset, display_limit, process_len)? {
-            break; // Exit loop if 'q' is pressed
-        }
-
-        // Refresh and draw
-        process_manager.refresh();
-        let processes = process_manager.get_processes();
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        draw_menu(display_limit)?;
-
-        sleep(Duration::from_millis(100));
-    }
-
-    restore_terminal()?; // Reset terminal state
-    Ok(())
-}
-
-pub fn handle_key_event(
-    scroll_offset: &mut usize,
-    display_limit: usize,
-    process_len: usize
-) -> std::io::Result<bool> {
-    if event::poll(Duration::from_millis(100))? {
-        if let Event::Key(key_event) = event::read()? {
-            match key_event.code {
-                KeyCode::Char('q') => return Ok(true), // Signal to quit
-                KeyCode::Up => {
-                    if *scroll_offset > 0 {
-                        *scroll_offset -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if *scroll_offset < process_len.saturating_sub(display_limit) {
-                        *scroll_offset += 1;
-                    }
-                }
-                KeyCode::Char('1') => {
-                    draw_filterSort_menu()?; // Enter filter menu
-                }
-                KeyCode::Char('2') => {
-                    // changing niceness
-                    change_process_niceness()?;
-                    
-                }
-                KeyCode::Char('3') => {
-                    // Placeholder for killing/stopping process
-                    draw_kill_stop_menu()?;
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(false)
-}
-
-pub fn handle_filter_key_event(
-    scroll_offset: &mut usize,
-    display_limit: usize,
-    process_len: usize
-) -> std::io::Result<bool> {
-    if event::poll(Duration::from_millis(100))? {
-        if let Event::Key(key_event) = event::read()? {
-            match key_event.code {
-
-                KeyCode::Char('1') => {
-                    draw_sort_menu()?; // Enter sort menu
-                }
-                KeyCode::Char('2') => {
-                    draw_filter_menu()?;
-                }
-                KeyCode::Backspace => return Ok(true), // Signal to quit
-
-                KeyCode::Up => {
-                    if *scroll_offset > 0 {
-                        *scroll_offset -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if *scroll_offset < process_len.saturating_sub(display_limit) {
-                        *scroll_offset += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(false)
-}
-
-pub fn handle_ffilter_key_event(
-    scroll_offset: &mut usize,
-    display_limit: usize,
-    process_len: usize
-) -> std::io::Result<bool> {
-    if event::poll(Duration::from_millis(100))? {
-        if let Event::Key(key_event) = event::read()? {
-            match key_event.code {
-                KeyCode::Backspace => return Ok(true), // Signal to quit
-                KeyCode::Char('1') => {
-                    draw_filtered_processes(20, "user")?; // Enter filtered menu
-                }
-                KeyCode::Char('2') => {
-                    draw_filtered_processes(20, "name")?; // Enter filtered menu
-                }
-                KeyCode::Char('3') => {
-                    draw_filtered_processes(20, "pid")?;                   // Enter filtered menu
-                }
-                KeyCode::Char('4') => {
-                    draw_filtered_processes(20, "ppid")?;// Enter filtered menu
-                }
-                KeyCode::Up => {
-                    if *scroll_offset > 0 {
-                        *scroll_offset -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if *scroll_offset < process_len.saturating_sub(display_limit) {
-                        *scroll_offset += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(false)
-}
-
-pub fn handle_sort_key_event(
-    scroll_offset: &mut usize,
-    display_limit: usize,
-    process_len: usize
-) -> std::io::Result<bool> {
-    if event::poll(Duration::from_millis(100))? {
-        if let Event::Key(key_event) = event::read()? {
-            match key_event.code {
-
-                KeyCode::Char('1') => {
-                    draw_sorted_processes(20, "pid")?; // Enter sorted menu
-                }
-                KeyCode::Char('2') => {
-                    draw_sorted_processes(20, "mem")?; // Enter sorted menu
-                }
-                KeyCode::Char('3') => {
-                    draw_sorted_processes(20, "ppid")?; // Enter sorted menu
-                }
-                KeyCode::Char('4') => {
-                    draw_sorted_processes(20, "start")?; // Enter sorted menu
-                }
-                KeyCode::Char('5') => {
-                    draw_sorted_processes(20, "nice")?; // Enter sorted menu for nice value
-                }
-                KeyCode::Backspace => return Ok(true), // Signal to quit
-
-                KeyCode::Up => {
-                    if *scroll_offset > 0 {
-                        *scroll_offset -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if *scroll_offset < process_len.saturating_sub(display_limit) {
-                        *scroll_offset += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(false)
-}
-
-pub fn handle_ssort_key_event(
-    scroll_offset: &mut usize,
-    display_limit: usize,
-    ascending: &mut bool,
-    process_len: usize
-) -> std::io::Result<bool> {
-    if event::poll(Duration::from_millis(100))? {
-        if let Event::Key(key_event) = event::read()? {
-            match key_event.code {
-                KeyCode::Backspace => return Ok(true), // Signal to quit
-                KeyCode::Char('a') => *ascending = !*ascending,
-                KeyCode::Up => {
-                    if *scroll_offset > 0 {
-                        *scroll_offset -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if *scroll_offset < process_len.saturating_sub(display_limit) {
-                        *scroll_offset += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(false)
-}
-
-pub fn handle_kill_stop_key_event(
-    scroll_offset: &mut usize,
-    display_limit: usize,
-    process_len: usize
-) -> std::io::Result<bool> {
-    if event::poll(Duration::from_millis(100))? {
-        if let Event::Key(key_event) = event::read()? {
-            match key_event.code {
-
-                KeyCode::Char('1') => {
-                  kill_process()?; // Enter kill menu
-                }
-                KeyCode::Char('2') => {
-                  stop_process()?; //Enter Stop menu 
-                }
-                KeyCode::Backspace => return Ok(true), // Signal to quit
-
-                KeyCode::Char('q') => return Ok(true),
-
-                KeyCode::Up => {
-                    if *scroll_offset > 0 {
-                        *scroll_offset -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if *scroll_offset < process_len.saturating_sub(display_limit) {
-                        *scroll_offset += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(false)
-}
-
-pub fn handle_kill_key_event(
-    scroll_offset: &mut usize,
-    display_limit: usize,
-    process_len: usize
-) -> std::io::Result<bool> {
-    if event::poll(Duration::from_millis(100))? {
-        if let Event::Key(key_event) = event::read()? {
-            match key_event.code {
-
-                KeyCode::Char('1') => {
-                  //  draw_kill_menu()?; // Enter kill menu
-                }
-                KeyCode::Char('2') => {
-                //    draw_stop_menu()?; //Enter Stop menu 
-
-                }
-                KeyCode::Backspace => return Ok(true), // Signal to quit
-
-                KeyCode::Char('q') => return Ok(true),
-
-                KeyCode::Up => {
-                    if *scroll_offset > 0 {
-                        *scroll_offset -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if *scroll_offset < process_len.saturating_sub(display_limit) {
-                        *scroll_offset += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(false)
-}
-
-pub fn handle_stop_key_event(
-    scroll_offset: &mut usize,
-    display_limit: usize,
-    process_len: usize
-) -> std::io::Result<bool> {
-    if event::poll(Duration::from_millis(100))? {
-        if let Event::Key(key_event) = event::read()? {
-            match key_event.code {
-
-                KeyCode::Char('1') => {
-                  //  draw_kill_menu()?; // Enter kill menu
-                }
-                KeyCode::Char('2') => {
-                //    draw_stop_menu()?; //Enter Stop menu 
-
-                }
-                KeyCode::Backspace => return Ok(true), // Signal to quit
-
-                KeyCode::Char('q') => return Ok(true),
-
-
-                KeyCode::Up => {
-                    if *scroll_offset > 0 {
-                        *scroll_offset -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if *scroll_offset < process_len.saturating_sub(display_limit) {
-                        *scroll_offset += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    Ok(false)
-}
-
-
-pub fn draw_processes(processes: &[ProcessInfo], scroll_offset: usize, display_limit: usize) -> std::io::Result<()> {
+    // Terminal initialization
+    enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
-    // Header in bold bright white on blue background
-    stdout.execute(SetAttribute(Attribute::Bold))?;
-    stdout.execute(SetForegroundColor(Color::White))?;
-    stdout.execute(SetBackgroundColor(Color::Blue))?;
-    
-    writeln!(
-        stdout,
-        "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>8} {:>12} {:>10}",
-        "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "NICE", "USER", "STATUS",
-    )?;
-    
-    // Reset colors and styling
-    stdout.execute(ResetColor)?;
-    stdout.execute(SetAttribute(Attribute::Reset))?;
-
-    // Calculate range of processes to display based on scroll_offset
-    let start_index = scroll_offset;
-    let end_index = (scroll_offset + display_limit).min(processes.len());
-
-    // Print the processes in the specified range
-    for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
-        execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
-
-        // Format the process name
-        let name = if process.name.len() > 15 {
-            format!("{:.12}...", process.name)
-        } else {
-            process.name.clone()
-        };
-        
-        // Format the user field
-        let user = process.user.clone().unwrap_or_default();
-        let user_display = if user.len() > 10 {
-            format!("{:.7}...", user)
-        } else {
-            user
-        };
-
-        let memory_mb = process.memory_usage / (1024 * 1024);
-        
-        // Set PID color based on odd/even rows for readability
-        if i % 2 == 0 {
-            stdout.execute(SetForegroundColor(Color::Cyan))?;
-        } else {
-            stdout.execute(SetForegroundColor(Color::Blue))?;
-        }
-        
-        write!(stdout, "{:<6} ", process.pid)?;
-        
-        // Process name in green
-        stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "{:<18} ", name)?;
-        
-        // CPU usage with color based on value
-        let cpu_color = match process.cpu_usage {
-            c if c > 50.0 => Color::Red,
-            c if c > 25.0 => Color::Yellow,
-            _ => Color::Green,
-        };
-        stdout.execute(SetForegroundColor(cpu_color))?;
-        write!(stdout, "{:>6.2} ", process.cpu_usage)?;
-        
-        // Memory usage with color based on value
-        let mem_color = match memory_mb {
-            m if m > 1000 => Color::Red,
-            m if m > 500 => Color::Yellow,
-            _ => Color::Green,
-        };
-        stdout.execute(SetForegroundColor(mem_color))?;
-        write!(stdout, "{:>10} ", memory_mb)?;
-        
-        // PPID in light blue
-        stdout.execute(SetForegroundColor(Color::Cyan))?;
-        write!(stdout, "{:>8} ", process.parent_pid.unwrap_or(0))?;
-        
-        // Start time in default color (formatted time)
-        stdout.execute(SetForegroundColor(Color::White))?;
-        // write!(stdout, "{:>12} ", process.start_time)?; // Old start time
-        write!(stdout, "{:>12} ", process.startTime)?; // New formatted start time
-        
-        // Nice value in yellow
-        stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "{:>8} ", process.nice)?;
-        
-        // User in magenta
-        stdout.execute(SetForegroundColor(Color::Magenta))?;
-        write!(stdout, "{:>12} ", user_display)?;
-        
-        // Status with color based on state
-        let status = process.status.trim();
-        let status_color = match status.to_lowercase().as_str() {
-            "running" => Color::Green,
-            "sleeping" => Color::Blue,
-            "stopped" => Color::Yellow,
-            "zombie" => Color::Red,
-            _ => Color::White,
-        };
-        stdout.execute(SetForegroundColor(status_color))?;
-        writeln!(stdout, "{:>10}", status)?;
-    }
-    
-    // Reset colors
-    stdout.execute(ResetColor)?;
-    stdout.flush()?;
-    Ok(())
-}
-
-pub fn draw_menu(display_limit: usize) -> std::io::Result<()> {
-    let mut stdout = stdout();
-    execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-    
-    // Navigation in cyan
-    stdout.execute(SetForegroundColor(Color::Cyan))?;
-    write!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down")?;
-    stdout.execute(ResetColor)?;
-    writeln!(stdout)?;
-    
-    execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-    
-    // Menu options with different colors
-    stdout.execute(SetForegroundColor(Color::Yellow))?;
-    write!(stdout, "1. Sort and Filter")?;
-    stdout.execute(ResetColor)?;
-    write!(stdout, "  |  ")?;
-    
-    stdout.execute(SetForegroundColor(Color::Green))?;
-    write!(stdout, "2. Change Niceness")?;
-    stdout.execute(ResetColor)?;
-    write!(stdout, "  |  ")?;
-    
-    stdout.execute(SetForegroundColor(Color::Red))?;
-    write!(stdout, "3. Kill/Stop Process")?;
-    stdout.execute(ResetColor)?;
-    write!(stdout, " |  ")?;
-    stdout.execute(SetForegroundColor(Color::Cyan))?;
-    write!(stdout, "4. Search for a Process")?;
-    stdout.execute(ResetColor)?;
-    write!(stdout, " |  ")?;
-    
-    stdout.execute(SetForegroundColor(Color::Magenta))?;
-    write!(stdout, "[Q] Quit")?;
-    stdout.execute(ResetColor)?;
-    writeln!(stdout)?;
-    
-    stdout.flush()?;
-    Ok(())
-}
-
-pub fn draw_filterSort_menu() -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new(); // Initialize process manager
-    let mut scroll_offset: usize = 0;                // Track scrolling position
-    let display_limit: usize = 20;                   // Number of processes visible at a time
-    let process_len = process_manager.get_processes().len(); // Total number of processes
-
-    loop {
-        process_manager.refresh();
-        let processes = process_manager.get_processes().clone();
-        if handle_filter_key_event(&mut scroll_offset, display_limit, process_len)? {
-            break; // Exit loop if 'q' is pressed
-        }
-
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        
-        // Menu option 1 in yellow
-        stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "1. Sort")?;
-        
-        // Separator
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Menu option 2 in green
-        stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "2. Filter")?;
-        
-        // Separator
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Back button in blue
-        stdout.execute(SetForegroundColor(Color::Blue))?;
-        writeln!(stdout, "[←] Back")?;
-        
-        // Reset color
-        stdout.execute(ResetColor)?;
-    }
-
-    stdout.flush()?;
-    sleep(Duration::from_millis(100));
-    
-    Ok(())
-}
-
-
-pub fn draw_sort_menu() -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new(); // Initialize process manager
-    let mut scroll_offset: usize = 0;                // Track scrolling position
-    let display_limit: usize = 20;                   // Number of processes visible at a time
-    let process_len = process_manager.get_processes().len(); // Total number of processes
+    let mut app = App::new();
     
     loop {
-        process_manager.refresh();
-        let processes = process_manager.get_processes().clone();
-        if handle_sort_key_event(&mut scroll_offset, display_limit, process_len)? {
-            break; // Exit loop if 'q' is pressed
-        }
-        
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        
-        // Option 1
-        stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "1. Sort by PID")?;
-        
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Option 2
-        stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "2. Sort by MEM")?;
-        
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Option 3
-        stdout.execute(SetForegroundColor(Color::Cyan))?;
-        write!(stdout, "3. Sort by PPID")?;
-        
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Option 4
-        stdout.execute(SetForegroundColor(Color::White))?;
-        write!(stdout, "4. Sort by Start")?;
-        
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Option 5
-        stdout.execute(SetForegroundColor(Color::Magenta))?;
-        write!(stdout, "5. Sort by Nice")?;
-        
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Back button
-        stdout.execute(SetForegroundColor(Color::Blue))?;
-        writeln!(stdout, "[←] Back")?;
-        
-        // Reset colors
-        stdout.execute(ResetColor)?;
-    }
-    
-    stdout.flush()?;
-    sleep(Duration::from_millis(100));
-    Ok(())
-}
-pub fn draw_filter_menu() -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new(); // Initialize process manager
-    let mut scroll_offset: usize = 0;                // Track scrolling position
-    let display_limit: usize = 20;                   // Number of processes visible at a time
-    let process_len = process_manager.get_processes().len(); // Total number of processes
+        app.refresh();
 
-    loop {
-        process_manager.refresh();
-        let processes = process_manager.get_processes().clone();
-
-        if handle_ffilter_key_event(&mut scroll_offset, display_limit, process_len)? {
-            break; // Exit loop if 'q' or 'Backspace' is pressed
-        }
-
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-
-        // Option 1 - Filter by User
-        stdout.execute(SetForegroundColor(Color::Magenta))?;
-        write!(stdout, "1. Filter by User")?;
-
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-
-        // Option 2 - Filter by Name
-        stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "2. Filter by Name")?;
-
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-
-        // Option 3 - Filter by PID
-        stdout.execute(SetForegroundColor(Color::Cyan))?;
-        write!(stdout, "3. Filter by PID")?;
-
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-
-        // Option 4 - Filter by PPID
-        stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "4. Filter by PPID")?;
-
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-
-        // Back button
-        stdout.execute(SetForegroundColor(Color::Blue))?;
-        writeln!(stdout, "[←] Back")?;
-
-        // Reset colors
-        stdout.execute(ResetColor)?;
-        stdout.flush()?;
-        sleep(Duration::from_millis(100));
-    }
-
-    Ok(())
-}
-
-pub fn draw_sorted_processes(display_limit: usize, sort_mode: &str) -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new();
-    let mut scroll_offset: usize = 0;
-    let mut ascending = true;
-
-    
-
-
-
-    loop {
-        process_manager.refresh();
-        let mut processes = process_manager.get_processes().clone();
-        let arrow = if ascending { "▲" } else { "▼" };
-        let pid_label = if sort_mode == "pid" { format!("PID{}", arrow) } else { "PID".to_string() };
-        let name_label = "NAME"; // not sortable
-        let cpu_label = "CPU%";  // not sortable
-        let mem_label = if sort_mode == "mem" { format!("MEM(MB){}", arrow) } else { "MEM(MB)".to_string() };
-        let ppid_label = if sort_mode == "ppid" { format!("PPID{}", arrow) } else { "PPID".to_string() };
-        let start_label = if sort_mode == "start" { format!("START{}", arrow) } else { "START".to_string() };
-        let nice_label = if sort_mode == "nice" { format!("NICE{}", arrow) } else { "NICE".to_string() };
-        let user_label = "USER";
-        let status_label = "STATUS";
-
-
-        // Apply sorting based on sort_mode
-        match sort_mode {
-            "pid" => {
-                if ascending {
-                    processes.sort_by_key(|p| p.pid);
-                } else {
-                    processes.sort_by_key(|p| std::cmp::Reverse(p.pid));
-                }
+        terminal.draw(|f| {
+            match app.view_mode {
+                ViewMode::ProcessList => draw_process_list(f, &app),
+                ViewMode::GraphView => graph::render_graph_dashboard(f, &app.process_manager, &app.graph_data, app.stats_scroll_offset),
+                ViewMode::FilterSort => draw_filter_sort_menu(f, &app),
+                ViewMode::Sort => draw_sort_menu(f, &app),
+                ViewMode::Filter => draw_filter_menu(f, &app),
+                ViewMode::FilterInput => draw_filter_input_menu(f, &app),
+                ViewMode::KillStop => draw_kill_stop_menu(f, &app),
+                ViewMode::ChangeNice => draw_change_nice_menu(f, &app),
             }
-            "ppid" => {
-                if ascending {
-                    processes.sort_by_key(|p| p.parent_pid.unwrap_or(0));
-                } else {
-                    processes.sort_by_key(|p| std::cmp::Reverse(p.parent_pid.unwrap_or(0)));
-                }
-            }
-            "mem" => {
-                if ascending {
-                    processes.sort_by(|a, b| a.memory_usage.cmp(&b.memory_usage));
-                } else {
-                    processes.sort_by(|a, b| b.memory_usage.cmp(&a.memory_usage));
-                }
-            }
-            "start" => {
-                if ascending {
-                    processes.sort_by(|a, b| a.start_time.cmp(&b.start_time));
-                } else {
-                    processes.sort_by(|a, b| b.start_time.cmp(&a.start_time));
-                }
-            }
-            "nice" => {
-                if ascending {
-                    processes.sort_by_key(|p| p.nice);
-                } else {
-                    processes.sort_by_key(|p| std::cmp::Reverse(p.nice));
-                }
-            }
-            _ => {}
-        }
+        })?;
 
-        if handle_ssort_key_event(&mut scroll_offset, display_limit, &mut ascending, processes.len())? {
+        if handle_events(&mut app)? {
             break;
         }
 
-        // Clear and draw header with color
-        execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-        
-        // Header in bold bright white on blue background
-        stdout.execute(SetAttribute(Attribute::Bold))?;
-        stdout.execute(SetForegroundColor(Color::White))?;
-        stdout.execute(SetBackgroundColor(Color::Blue))?;
-        
-        writeln!(
-            stdout,
-            "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>8} {:>12} {:>10}",
-            pid_label, name_label, cpu_label, mem_label, ppid_label, start_label, nice_label, user_label, status_label,
-        )?;
-        
-        
-        // Reset colors and styling
-        stdout.execute(ResetColor)?;
-        stdout.execute(SetAttribute(Attribute::Reset))?;
-
-        let start_index = scroll_offset;
-        let end_index = (scroll_offset + display_limit).min(processes.len());
-
-        for (i, process) in processes.iter().enumerate().take(end_index).skip(start_index) {
-            execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
-
-            let name = if process.name.len() > 15 {
-                format!("{:.12}...", process.name)
-            } else {
-                process.name.clone()
-            };
-
-            let user = process.user.clone().unwrap_or_default();
-            let user_display = if user.len() > 10 {
-                format!("{:.7}...", user)
-            } else {
-                user
-            };
-
-            let memory_mb = process.memory_usage / (1024 * 1024);
-            
-            // Set PID color based on odd/even rows for readability
-            if i % 2 == 0 {
-                stdout.execute(SetForegroundColor(Color::Cyan))?;
-            } else {
-                stdout.execute(SetForegroundColor(Color::Blue))?;
-            }
-            
-            write!(stdout, "{:<6} ", process.pid)?;
-            
-            // Process name in green
-            stdout.execute(SetForegroundColor(Color::Green))?;
-            write!(stdout, "{:<18} ", name)?;
-            
-            // CPU usage with color based on value
-            let cpu_color = match process.cpu_usage {
-                c if c > 50.0 => Color::Red,
-                c if c > 25.0 => Color::Yellow,
-                _ => Color::Green,
-            };
-            stdout.execute(SetForegroundColor(cpu_color))?;
-            write!(stdout, "{:>6.2} ", process.cpu_usage)?;
-            
-            // Memory usage with color based on value
-            let mem_color = match memory_mb {
-                m if m > 1000 => Color::Red,
-                m if m > 500 => Color::Yellow,
-                _ => Color::Green,
-            };
-            stdout.execute(SetForegroundColor(mem_color))?;
-            write!(stdout, "{:>10} ", memory_mb)?;
-            
-            // PPID in light blue
-            stdout.execute(SetForegroundColor(Color::Cyan))?;
-            write!(stdout, "{:>8} ", process.parent_pid.unwrap_or(0))?;
-            
-            // Start time in default color
-            stdout.execute(SetForegroundColor(Color::White))?;
-            write!(stdout, "{:>12} ", process.startTime)?;
-            
-            // Nice value in yellow
-            stdout.execute(SetForegroundColor(Color::Yellow))?;
-            write!(stdout, "{:>8} ", process.nice)?;
-            
-            // User in magenta
-            stdout.execute(SetForegroundColor(Color::Magenta))?;
-            write!(stdout, "{:>12} ", user_display)?;
-            
-            // Status with color based on state
-            let status = process.status.trim();
-            let status_color = match status.to_lowercase().as_str() {
-                "running" => Color::Green,
-                "sleeping" => Color::Blue,
-                "stopped" => Color::Yellow,
-                "zombie" => Color::Red,
-                _ => Color::White,
-            };
-            stdout.execute(SetForegroundColor(status_color))?;
-            writeln!(stdout, "{:>10}", status)?;
-        }
-
-        // Reset color before drawing navigation
-        stdout.execute(ResetColor)?;
-        
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        
-        // Navigation in cyan
-        stdout.execute(SetForegroundColor(Color::Cyan))?;
-        writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down")?;
-        
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-        
-        // Back button in blue
-        stdout.execute(SetForegroundColor(Color::Blue))?;
-        writeln!(stdout, "[←] Back")?;
-        
-        // Reset color
-        stdout.execute(ResetColor)?;
-        
-        stdout.flush()?;
         sleep(Duration::from_millis(100));
     }
 
+    // Cleanup and restore terminal
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    
     Ok(())
 }
 
+fn draw_process_list(f: &mut Frame, app: &App) {
+    let size = f.size();
+    
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),     // Header
+            Constraint::Min(size.height.saturating_sub(6)), // Process list
+            Constraint::Length(3),   // Menu
+        ])
+        .split(size);
 
-fn change_process_niceness() -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new();
-    let mut scroll_offset: usize = 0;
-    let display_limit: usize = 20;
-    
-    // Input state variables
-    let mut pid_input = String::new();
-    let mut input_mode = true; // true = collecting PID, false = collecting nice value
-    let mut nice_input = String::new();
-    let mut message = String::new();
-    let mut message_is_error = false;
-    let mut show_message_until = std::time::Instant::now();
-    
-    loop {
-        // Refresh process list
-        process_manager.refresh();
-        let processes = process_manager.get_processes();
-        
-        // Draw processes
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        
-        // Draw input prompts - always show both prompts
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-        
-        // PID input prompt (always shown)
-        stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "Enter PID to change niceness (or 'q' to quit): ")?;
-        
-        if input_mode {
-            // Highlight active input field
-            stdout.execute(SetForegroundColor(Color::White))?;
-            stdout.execute(SetAttribute(Attribute::Bold))?;
-        } else {
-            // Dim inactive input field
-            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
-        }
-        
-        write!(stdout, "{}", pid_input)?;
-        stdout.execute(SetAttribute(Attribute::Reset))?;
-        
-        // Nice value prompt (always shown on next line)
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-        
-        stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "Enter new nice value (0-19, or -20 to -1 for root), or 'q' to cancel: ")?;
-        
-        if !input_mode {
-            // Highlight active input field
-            stdout.execute(SetForegroundColor(Color::White))?;
-            stdout.execute(SetAttribute(Attribute::Bold))?;
-        } else {
-            // Dim inactive input field
-            stdout.execute(SetForegroundColor(Color::DarkGrey))?;
-        }
-        
-        write!(stdout, "{}", nice_input)?;
-        stdout.execute(SetAttribute(Attribute::Reset))?;
-        
-        // Show message if needed
-        if std::time::Instant::now() < show_message_until {
-            execute!(stdout, cursor::MoveTo(0, (display_limit + 4) as u16))?;
-            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-            
-            if message_is_error {
-                // Error message in red
-                stdout.execute(SetForegroundColor(Color::Red))?;
+    // Get sort indicator for each column
+    let get_sort_indicator = |column: &str| -> &str {
+        if let Some(mode) = &app.sort_mode {
+            if mode == column {
+                if app.sort_ascending {
+                    " ↑"
+                } else {
+                    " ↓"
+                }
             } else {
-                // Success message in green
-                stdout.execute(SetForegroundColor(Color::Green))?;
+                ""
             }
-            
-            write!(stdout, "{}", message)?;
-            stdout.execute(SetForegroundColor(Color::Reset))?;
+        } else {
+            ""
         }
-        
-        stdout.flush()?;
-        
-        // Handle input events
-        if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                // Handle quit
-                Event::Key(KeyEvent { code: KeyCode::Char('q'), .. }) => {
-                    if input_mode {
-                        return Ok(());  // Return to main menu
+    };
+
+    // Header
+    let headers = [
+        format!("PID{}", get_sort_indicator("pid")),
+        format!("NAME{}", get_sort_indicator("name")),
+        format!("CPU%{}", get_sort_indicator("cpu")),
+        format!("MEM(MB){}", get_sort_indicator("mem")),
+        format!("PPID{}", get_sort_indicator("ppid")),
+        format!("START{}", get_sort_indicator("start")),
+        format!("NICE{}", get_sort_indicator("nice")),
+        format!("USER{}", get_sort_indicator("user")),
+        "STATUS".to_string(),
+    ];
+
+    let header_cells = headers
+        .iter()
+        .map(|h| Cell::from(h.as_str()).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+    
+    let header = Row::new(header_cells)
+        .style(Style::default().bg(Color::Blue))
+        .height(1);
+
+    // Process rows
+    let processes = app.process_manager.get_processes();
+    let rows: Vec<Row> = processes
+        .iter()
+        .skip(app.scroll_offset)
+        .take(app.display_limit)
+        .enumerate()
+        .map(|(i, process)| {
+            let style = if i % 2 == 0 {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::Blue)
+            };
+
+            let memory_mb = process.memory_usage / (1024 * 1024);
+            let cpu_style = match process.cpu_usage {
+                c if c > 50.0 => Style::default().fg(Color::Red),
+                c if c > 25.0 => Style::default().fg(Color::Yellow),
+                _ => Style::default().fg(Color::Green),
+            };
+
+            Row::new(vec![
+                Cell::from(process.pid.to_string()).style(style),
+                Cell::from(process.name.clone()).style(Style::default().fg(Color::Green)),
+                Cell::from(format!("{:.2}%", process.cpu_usage)).style(cpu_style),
+                Cell::from(format!("{}MB", memory_mb)).style(style),
+                Cell::from(process.parent_pid.unwrap_or(0).to_string()).style(style),
+                Cell::from(process.startTime.clone()).style(Style::default()),
+                Cell::from(process.nice.to_string()).style(Style::default().fg(Color::Yellow)),
+                Cell::from(process.user.clone().unwrap_or_default()).style(Style::default().fg(Color::Magenta)),
+                Cell::from(process.status.trim()).style(get_status_style(&process.status)),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(rows)
+        .header(header)
+        .block(Block::default().borders(Borders::ALL))
+        .widths(&[
+            Constraint::Length(8),  // PID
+            Constraint::Length(20), // NAME
+            Constraint::Length(8),  // CPU%
+            Constraint::Length(10), // MEM
+            Constraint::Length(8),  // PPID
+            Constraint::Length(12), // START
+            Constraint::Length(8),  // NICE
+            Constraint::Length(12), // USER
+            Constraint::Length(10), // STATUS
+        ]);
+
+    f.render_widget(table, chunks[1]);
+
+    // Menu
+    let menu_text = vec![
+        Line::from(vec![
+            Span::styled("[↑/↓] Scroll  ", Style::default().fg(Color::Cyan)),
+            Span::raw("| "),
+            Span::styled("[1] Filter/Sort  ", Style::default().fg(Color::Yellow)),
+            Span::raw("| "),
+            Span::styled("[2] Change Nice  ", Style::default().fg(Color::Green)),
+            Span::raw("| "),
+            Span::styled("[3] Kill/Stop  ", Style::default().fg(Color::Red)),
+            Span::raw("| "),
+            Span::styled("[Tab] Graphs  ", Style::default().fg(Color::Blue)),
+            Span::raw("| "),
+            Span::styled("[q] Quit", Style::default().fg(Color::White)),
+        ]),
+    ];
+
+    let menu = Paragraph::new(menu_text)
+        .block(Block::default().borders(Borders::ALL))
+        .alignment(Alignment::Left);
+
+    f.render_widget(menu, chunks[2]);
+}
+
+fn draw_filter_sort_menu(f: &mut Frame, app: &App) {
+    let size = f.size();
+    
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Min(10),    // Menu items
+            Constraint::Length(3),  // Status
+        ])
+        .split(size);
+
+    // Title
+    let title = Paragraph::new("Filter/Sort Menu")
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title, chunks[0]);
+
+    // Menu items
+    let items = vec![
+        ListItem::new(Span::styled("[1] Sort", Style::default().fg(Color::Yellow))),
+        ListItem::new(Span::styled("[2] Filter", Style::default().fg(Color::Green))),
+        ListItem::new(Span::styled("[←] Back", Style::default().fg(Color::Blue))),
+    ];
+
+    let menu = List::new(items)
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default())
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+    f.render_widget(menu, chunks[1]);
+}
+
+fn draw_sort_menu(f: &mut Frame, app: &App) {
+    let size = f.size();
+    
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Min(10),    // Menu items
+            Constraint::Length(3),  // Status
+        ])
+        .split(size);
+
+    // Title
+    let title = Paragraph::new("Sort Menu")
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title, chunks[0]);
+
+    // Menu items
+    let items = vec![
+        ListItem::new(Span::styled("[1] Sort by PID", Style::default().fg(Color::Yellow))),
+        ListItem::new(Span::styled("[2] Sort by Memory", Style::default().fg(Color::Green))),
+        ListItem::new(Span::styled("[3] Sort by PPID", Style::default().fg(Color::Blue))),
+        ListItem::new(Span::styled("[4] Sort by Start Time", Style::default().fg(Color::Magenta))),
+        ListItem::new(Span::styled("[5] Sort by Nice Value", Style::default().fg(Color::Cyan))),
+        ListItem::new(Span::styled("[6] Sort by CPU Usage", Style::default().fg(Color::Red))),
+        ListItem::new(Span::styled("[a] Toggle Ascending/Descending", Style::default().fg(Color::White))),
+        ListItem::new(Span::styled("[←] Back", Style::default().fg(Color::Blue))),
+    ];
+
+    let menu = List::new(items)
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default())
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+    f.render_widget(menu, chunks[1]);
+
+    // Status
+    let order_text = format!("Current Order: {}", if app.sort_ascending { "Ascending ↑" } else { "Descending ↓" });
+    let status = Paragraph::new(order_text)
+        .style(Style::default())
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+
+    f.render_widget(status, chunks[2]);
+}
+
+fn draw_filter_menu(f: &mut Frame, app: &App) {
+    let size = f.size();
+    
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Min(10),    // Menu items
+        ])
+        .split(size);
+
+    // Title
+    let title = Paragraph::new("Select Filter Type")
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title, chunks[0]);
+
+    // Menu items
+    let items = vec![
+        ListItem::new(Span::styled("[1] Filter by User", Style::default().fg(Color::Magenta))),
+        ListItem::new(Span::styled("[2] Filter by Name", Style::default().fg(Color::Green))),
+        ListItem::new(Span::styled("[3] Filter by PID", Style::default().fg(Color::Yellow))),
+        ListItem::new(Span::styled("[4] Filter by PPID", Style::default().fg(Color::Cyan))),
+        ListItem::new(Span::styled("[Esc] Clear Filter", Style::default().fg(Color::Red))),
+        ListItem::new(Span::styled("[←] Back", Style::default().fg(Color::Blue))),
+    ];
+
+    let menu = List::new(items)
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default())
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+
+    f.render_widget(menu, chunks[1]);
+}
+
+fn draw_filter_input_menu(f: &mut Frame, app: &App) {
+    let size = f.size();
+    
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Min(10),    // Instructions
+            Constraint::Length(3),  // Input
+        ])
+        .split(size);
+
+    // Title
+    let filter_type = match app.filter_mode.as_deref() {
+        Some("user") => "User",
+        Some("name") => "Process Name",
+        Some("pid") => "PID",
+        Some("ppid") => "Parent PID",
+        _ => "Unknown",
+    };
+    let title = Paragraph::new(format!("Enter {} Filter", filter_type))
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title, chunks[0]);
+
+    // Instructions
+    let mut instructions = vec![
+        ListItem::new(Span::styled(
+            format!("Enter value to filter by {}", filter_type.to_lowercase()),
+            Style::default().fg(Color::White)
+        )),
+        ListItem::new(Span::styled("[Enter] Apply Filter", Style::default().fg(Color::Green))),
+        ListItem::new(Span::styled("[←] Back", Style::default().fg(Color::Blue))),
+    ];
+
+    if app.filter_mode.as_deref().map_or(false, |m| m == "pid" || m == "ppid") {
+        instructions.insert(1, ListItem::new(Span::styled(
+            "(Numbers only)",
+            Style::default().fg(Color::Yellow)
+        )));
+    }
+
+    let instructions_widget = List::new(instructions)
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default());
+
+    f.render_widget(instructions_widget, chunks[1]);
+
+    // Input field
+    let input_text = format!("Filter value: {}", app.input_state.filter_input);
+    let input = Paragraph::new(input_text)
+        .style(Style::default())
+        .block(Block::default().borders(Borders::ALL));
+
+    f.render_widget(input, chunks[2]);
+}
+
+fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
+    let size = f.size();
+    
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),    // Title
+            Constraint::Min(size.height.saturating_sub(8)), // Process list
+            Constraint::Length(5),    // Input and feedback area
+        ])
+        .split(size);
+
+    // Title
+    let title = Paragraph::new("Process Control Menu")
+        .style(Style::default().fg(Color::Red))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title, chunks[0]);
+
+    // Process list
+    let processes = app.process_manager.get_processes();
+    let headers = ["PID", "NAME", "STATUS", "CPU%", "MEM(MB)", "USER"];
+    
+    let header_cells = headers
+        .iter()
+        .map(|h| Cell::from(*h).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+    
+    let header = Row::new(header_cells)
+        .style(Style::default().bg(Color::Blue))
+        .height(1);
+
+    let rows: Vec<Row> = processes
+        .iter()
+        .skip(app.scroll_offset)
+        .take(app.display_limit)
+        .enumerate()
+        .map(|(i, process)| {
+            let style = if i % 2 == 0 {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::Blue)
+            };
+
+            let memory_mb = process.memory_usage / (1024 * 1024);
+
+            Row::new(vec![
+                Cell::from(process.pid.to_string()).style(style),
+                Cell::from(process.name.clone()).style(Style::default().fg(Color::Green)),
+                Cell::from(process.status.trim()).style(get_status_style(&process.status)),
+                Cell::from(format!("{:.1}%", process.cpu_usage)).style(style),
+                Cell::from(format!("{}", memory_mb)).style(style),
+                Cell::from(process.user.clone().unwrap_or_default()).style(Style::default().fg(Color::Magenta)),
+            ])
+        })
+        .collect();
+
+    let process_table = Table::new(rows)
+        .header(header)
+        .block(Block::default().borders(Borders::ALL).title("Processes (↑↓ to scroll)"))
+        .widths(&[
+            Constraint::Length(7),   // PID
+            Constraint::Length(30),  // NAME
+            Constraint::Length(10),  // STATUS
+            Constraint::Length(8),   // CPU%
+            Constraint::Length(10),  // MEM(MB)
+            Constraint::Length(15),  // USER
+        ])
+        .column_spacing(1);
+
+    f.render_widget(process_table, chunks[1]);
+
+    // Input and feedback area
+    let input_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),  // Commands
+            Constraint::Length(3),  // Input and feedback
+        ])
+        .split(chunks[2]);
+
+    // Commands help
+    let commands = vec![
+        Span::styled("Commands: ", Style::default().fg(Color::White)),
+        Span::styled("[1] Kill  ", Style::default().fg(Color::Red)),
+        Span::styled("[2] Stop  ", Style::default().fg(Color::Yellow)),
+        Span::styled("[Esc] Back", Style::default().fg(Color::Blue)),
+    ];
+    let commands_text = Paragraph::new(Line::from(commands))
+        .block(Block::default().borders(Borders::ALL))
+        .alignment(Alignment::Left);
+    f.render_widget(commands_text, input_area[0]);
+
+    // Input and feedback
+    let content = if let Some((msg, is_error)) = &app.input_state.message {
+        // Show feedback message
+        vec![
+            Line::from(vec![
+                Span::styled(
+                    msg,
+                    if *is_error {
+                        Style::default().fg(Color::Red)
                     } else {
-                        // Return to PID input mode
-                        input_mode = true;
-                        nice_input.clear();
+                        Style::default().fg(Color::Green)
                     }
-                },
-                
-                // Handle scrolling
-                Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
-                    if scroll_offset > 0 {
-                        scroll_offset -= 1;
+                )
+            ])
+        ]
+    } else {
+        // Show input prompt
+        vec![
+            Line::from(vec![
+                Span::styled("Enter PID: ", Style::default().fg(Color::Yellow)),
+                Span::styled(&app.input_state.pid_input, Style::default().fg(Color::White)),
+                Span::styled(" █", Style::default().fg(Color::White)),
+            ])
+        ]
+    };
+
+    let input_widget = Paragraph::new(content)
+        .block(Block::default().borders(Borders::ALL).title("Input/Feedback"))
+        .alignment(Alignment::Left);
+    f.render_widget(input_widget, input_area[1]);
+}
+
+fn draw_change_nice_menu(f: &mut Frame, app: &App) {
+    let size = f.size();
+    
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),    // Title
+            Constraint::Min(10),      // Process list
+            Constraint::Length(1),    // Selected PID display
+            Constraint::Length(1),    // Input box
+        ])
+        .split(size);
+
+    // Title
+    let title = Paragraph::new("Change Nice Value")
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(title, chunks[0]);
+
+    // Process list
+    let processes = app.process_manager.get_processes();
+    let headers = ["PID", "NAME", "NICE", "CPU%", "USER"];
+    
+    let header_cells = headers
+        .iter()
+        .map(|h| Cell::from(*h).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+    
+    let header = Row::new(header_cells)
+        .style(Style::default().bg(Color::Blue))
+        .height(1);
+
+    let rows: Vec<Row> = processes
+        .iter()
+        .skip(app.scroll_offset)
+        .take(app.display_limit)
+        .enumerate()
+        .map(|(i, process)| {
+            let style = if i % 2 == 0 {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::Blue)
+            };
+
+            Row::new(vec![
+                Cell::from(process.pid.to_string()).style(style),
+                Cell::from(process.name.clone()).style(Style::default().fg(Color::Green)),
+                Cell::from(process.nice.to_string()).style(Style::default().fg(Color::Yellow)),
+                Cell::from(format!("{:.1}%", process.cpu_usage)).style(style),
+                Cell::from(process.user.clone().unwrap_or_default()).style(Style::default().fg(Color::Magenta)),
+            ])
+        })
+        .collect();
+
+    let process_table = Table::new(rows)
+        .header(header)
+        .block(Block::default().borders(Borders::ALL).title("Processes (↑↓ to scroll)"))
+        .widths(&[
+            Constraint::Length(8),   // PID
+            Constraint::Length(20),  // NAME
+            Constraint::Length(8),   // NICE
+            Constraint::Length(8),   // CPU%
+            Constraint::Length(12),  // USER
+        ]);
+
+    f.render_widget(process_table, chunks[1]);
+
+    // Selected PID display
+    match app.nice_input_state {
+        NiceInputState::SelectingPid => {
+            if !app.input_state.pid_input.is_empty() {
+                let selected_text = format!("Selected PID: {}", app.input_state.pid_input);
+                let selected_pid = Paragraph::new(selected_text)
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(selected_pid, chunks[2]);
+            }
+        }
+        NiceInputState::EnteringNice => {
+            let selected_text = format!("Selected PID: {}", app.input_state.pid_input);
+            let selected_pid = Paragraph::new(selected_text)
+                .style(Style::default().fg(Color::Yellow));
+            f.render_widget(selected_pid, chunks[2]);
+        }
+    }
+
+    // Input box
+    let input_text = match app.nice_input_state {
+        NiceInputState::SelectingPid => {
+            if let Some((msg, is_error)) = &app.input_state.message {
+                msg.clone()
+            } else {
+                format!("Please enter the PID: {}", app.input_state.pid_input)
+            }
+        }
+        NiceInputState::EnteringNice => {
+            if let Some((msg, is_error)) = &app.input_state.message {
+                msg.clone()
+            } else {
+                format!("Please enter the new nice value (-20 to 19): {}", app.input_state.nice_input)
+            }
+        }
+    };
+
+    let input_style = if let Some((_, is_error)) = &app.input_state.message {
+        if *is_error {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Green)
+        }
+    } else {
+        Style::default().fg(Color::Yellow)
+    };
+
+    let input_box = Paragraph::new(input_text)
+        .style(input_style);
+    f.render_widget(input_box, chunks[3]);
+}
+
+fn get_status_style(status: &str) -> Style {
+    match status.trim().to_lowercase().as_str() {
+        "running" => Style::default().fg(Color::Green),
+        "sleeping" => Style::default().fg(Color::Blue),
+        "stopped" => Style::default().fg(Color::Yellow),
+        "zombie" => Style::default().fg(Color::Red),
+        _ => Style::default().fg(Color::White),
+    }
+}
+
+fn handle_events(app: &mut App) -> Result<bool, Box<dyn Error>> {
+    if event::poll(Duration::from_millis(100))? {
+        if let Event::Key(key) = event::read()? {
+            let should_quit = match app.view_mode {
+                ViewMode::ProcessList => handle_process_list_input(key, app)?,
+                ViewMode::GraphView => handle_graph_view_input(key, app)?,
+                ViewMode::FilterSort => handle_filter_sort_input(key, app)?,
+                ViewMode::Sort => handle_sort_input(key, app)?,
+                ViewMode::Filter => handle_filter_input(key, app)?,
+                ViewMode::FilterInput => handle_filter_input(key, app)?,
+                ViewMode::KillStop => handle_kill_stop_input(key, app)?,
+                ViewMode::ChangeNice => handle_change_nice_input(key, app)?,
+            };
+            if should_quit {
+                return Ok(true);
+            }
+        }
+    }
+
+    // Check for message timeout
+    if let Some(timeout) = app.input_state.message_timeout {
+        if std::time::Instant::now() >= timeout {
+            app.input_state.message = None;
+            app.input_state.message_timeout = None;
+        }
+    }
+
+    Ok(false)
+}
+
+fn handle_process_list_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    match key.code {
+        KeyCode::Char('q') => return Ok(true),
+        KeyCode::Tab => app.view_mode = ViewMode::GraphView,
+        KeyCode::Up => {
+            if app.scroll_offset > 0 {
+                app.scroll_offset -= 1;
+            }
+        }
+        KeyCode::Down => {
+            let process_len = app.process_manager.get_processes().len();
+            if app.scroll_offset < process_len.saturating_sub(app.display_limit) {
+                app.scroll_offset += 1;
+            }
+        }
+        KeyCode::Char('1') => app.view_mode = ViewMode::FilterSort,
+        KeyCode::Char('2') => app.view_mode = ViewMode::ChangeNice,
+        KeyCode::Char('3') => app.view_mode = ViewMode::KillStop,
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_graph_view_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
+        KeyCode::Tab => {
+            app.view_mode = ViewMode::ProcessList;
+            app.stats_scroll_offset = 0;  // Reset scroll when leaving graph view
+        }
+        KeyCode::Up => {
+            if app.stats_scroll_offset > 0 {
+                app.stats_scroll_offset -= 1;
+            }
+        }
+        KeyCode::Down => {
+            // We'll let the stats rendering function handle the maximum scroll
+            app.stats_scroll_offset += 1;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_filter_sort_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    match key.code {
+        KeyCode::Char('1') => app.view_mode = ViewMode::Sort,
+        KeyCode::Char('2') => app.view_mode = ViewMode::Filter,
+        KeyCode::Backspace | KeyCode::Esc => app.view_mode = ViewMode::ProcessList,
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_sort_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    match key.code {
+        KeyCode::Char('1') => {
+            app.sort_mode = Some("pid".to_string());
+            app.process_manager.set_sort("pid", app.sort_ascending);
+            app.view_mode = ViewMode::ProcessList;
+        }
+        KeyCode::Char('2') => {
+            app.sort_mode = Some("mem".to_string());
+            app.process_manager.set_sort("mem", app.sort_ascending);
+            app.view_mode = ViewMode::ProcessList;
+        }
+        KeyCode::Char('3') => {
+            app.sort_mode = Some("ppid".to_string());
+            app.process_manager.set_sort("ppid", app.sort_ascending);
+            app.view_mode = ViewMode::ProcessList;
+        }
+        KeyCode::Char('4') => {
+            app.sort_mode = Some("start".to_string());
+            app.process_manager.set_sort("start", app.sort_ascending);
+            app.view_mode = ViewMode::ProcessList;
+        }
+        KeyCode::Char('5') => {
+            app.sort_mode = Some("nice".to_string());
+            app.process_manager.set_sort("nice", app.sort_ascending);
+            app.view_mode = ViewMode::ProcessList;
+        }
+        KeyCode::Char('6') => {
+            app.sort_mode = Some("cpu".to_string());
+            app.process_manager.set_sort("cpu", app.sort_ascending);
+            app.view_mode = ViewMode::ProcessList;
+        }
+        KeyCode::Char('a') => {
+            app.sort_ascending = !app.sort_ascending;
+            if let Some(mode) = &app.sort_mode {
+                app.process_manager.set_sort(mode, app.sort_ascending);
+            }
+        }
+        KeyCode::Backspace | KeyCode::Esc => app.view_mode = ViewMode::FilterSort,
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_filter_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    match app.view_mode {
+        ViewMode::Filter => {
+            match key.code {
+                KeyCode::Char('1') => {
+                    app.filter_mode = Some("user".to_string());
+                    app.input_state.filter_input.clear();
+                    app.view_mode = ViewMode::FilterInput;
+                }
+                KeyCode::Char('2') => {
+                    app.filter_mode = Some("name".to_string());
+                    app.input_state.filter_input.clear();
+                    app.view_mode = ViewMode::FilterInput;
+                }
+                KeyCode::Char('3') => {
+                    app.filter_mode = Some("pid".to_string());
+                    app.input_state.filter_input.clear();
+                    app.view_mode = ViewMode::FilterInput;
+                }
+                KeyCode::Char('4') => {
+                    app.filter_mode = Some("ppid".to_string());
+                    app.input_state.filter_input.clear();
+                    app.view_mode = ViewMode::FilterInput;
+                }
+                KeyCode::Esc => {
+                    app.filter_mode = None;
+                    app.input_state.filter_input.clear();
+                    app.process_manager.set_filter(None, None);
+                    app.view_mode = ViewMode::ProcessList;
+                }
+                KeyCode::Backspace | KeyCode::Left => {
+                    app.view_mode = ViewMode::FilterSort;
+                }
+                _ => {}
+            }
+        }
+        ViewMode::FilterInput => {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if let Some(mode) = &app.filter_mode {
+                        // Only allow digits for PID and PPID filters
+                        if (mode == "pid" || mode == "ppid") && !c.is_ascii_digit() {
+                            return Ok(false);
+                        }
+                        app.input_state.filter_input.push(c);
                     }
-                },
-                Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
-                    if scroll_offset < processes.len().saturating_sub(display_limit) {
-                        scroll_offset += 1;
+                }
+                KeyCode::Backspace => {
+                    app.input_state.filter_input.pop();
+                }
+                KeyCode::Enter => {
+                    if !app.input_state.filter_input.is_empty() {
+                        app.process_manager.set_filter(
+                            app.filter_mode.clone(),
+                            Some(app.input_state.filter_input.clone())
+                        );
+                        app.view_mode = ViewMode::ProcessList;
                     }
-                },
-                
-                // Handle backspace
-                Event::Key(KeyEvent { code: KeyCode::Backspace, .. }) => {
-                    if input_mode {
-                        pid_input.pop();
+                }
+                KeyCode::Backspace | KeyCode::Left => {
+                    app.view_mode = ViewMode::Filter;
+                    app.input_state.filter_input.clear();
+                }
+                KeyCode::Esc => {
+                    app.filter_mode = None;
+                    app.input_state.filter_input.clear();
+                    app.process_manager.set_filter(None, None);
+                    app.view_mode = ViewMode::ProcessList;
+                }
+                _ => {}
+            }
+        }
+        _ => unreachable!(),
+    }
+    Ok(false)
+}
+
+fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    match key.code {
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            app.input_state.pid_input.push(c);
+            app.input_state.message = None;
+        }
+        KeyCode::Backspace => {
+            app.input_state.pid_input.pop();
+            app.input_state.message = None;
+        }
+        KeyCode::Enter => {
+            if !app.input_state.pid_input.is_empty() {
+                if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
+                    if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
+                        app.input_state.message = Some((
+                            format!("PID {} selected. Press [1] to kill or [2] to stop", pid),
+                            false
+                        ));
                     } else {
-                        nice_input.pop();
+                        app.input_state.message = Some((
+                            format!("Error: Process with PID {} not found", pid),
+                            true
+                        ));
+                        app.input_state.pid_input.clear();
                     }
-                },
-                
-                // Handle enter
-                Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
-                    if input_mode {
-                        // Process PID input
-                        match pid_input.trim().parse::<u32>() {
-                            Ok(_pid) => {
-                                // Switch to nice value input mode
-                                input_mode = false;
-                            },
-                            Err(_) => {
-                                message = "Invalid PID format. Please try again.".to_string();
-                                message_is_error = true;
-                                show_message_until = std::time::Instant::now() + Duration::from_secs(2);
-                                pid_input.clear();
+                }
+            }
+        }
+        KeyCode::Char('1') if !app.input_state.pid_input.is_empty() => {
+            if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
+                if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
+                    match app.process_manager.kill_process(pid) {
+                        Ok(_) => {
+                            app.input_state.message = Some((
+                                format!("Successfully killed process {}", pid),
+                                false
+                            ));
+                            app.input_state.message_timeout = Some(std::time::Instant::now() + Duration::from_secs(1));
+                            app.input_state.pid_input.clear();
+                        }
+                        Err(e) => {
+                            app.input_state.message = Some((
+                                format!("Error killing process: {}", e),
+                                true
+                            ));
+                        }
+                    }
+                } else {
+                    app.input_state.message = Some((
+                        format!("Error: Process with PID {} not found", pid),
+                        true
+                    ));
+                    app.input_state.pid_input.clear();
+                }
+            }
+        }
+        KeyCode::Char('2') if !app.input_state.pid_input.is_empty() => {
+            if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
+                if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
+                    match app.process_manager.stop_process(pid) {
+                        Ok(_) => {
+                            app.input_state.message = Some((
+                                format!("Successfully stopped process {}", pid),
+                                false
+                            ));
+                            app.input_state.message_timeout = Some(std::time::Instant::now() + Duration::from_secs(1));
+                            app.input_state.pid_input.clear();
+                        }
+                        Err(e) => {
+                            app.input_state.message = Some((
+                                format!("Error stopping process: {}", e),
+                                true
+                            ));
+                        }
+                    }
+                } else {
+                    app.input_state.message = Some((
+                        format!("Error: Process with PID {} not found", pid),
+                        true
+                    ));
+                    app.input_state.pid_input.clear();
+                }
+            }
+        }
+        KeyCode::Up => {
+            if app.scroll_offset > 0 {
+                app.scroll_offset -= 1;
+            }
+        }
+        KeyCode::Down => {
+            let process_len = app.process_manager.get_processes().len();
+            if app.scroll_offset < process_len.saturating_sub(app.display_limit) {
+                app.scroll_offset += 1;
+            }
+        }
+        KeyCode::Esc => {
+            app.view_mode = ViewMode::ProcessList;
+            app.input_state.pid_input.clear();
+            app.input_state.message = None;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    match app.nice_input_state {
+        NiceInputState::SelectingPid => {
+            match key.code {
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    app.input_state.pid_input.push(c);
+                }
+                KeyCode::Backspace => {
+                    app.input_state.pid_input.pop();
+                }
+                KeyCode::Enter => {
+                    if !app.input_state.pid_input.is_empty() {
+                        if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
+                            if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
+                                app.nice_input_state = NiceInputState::EnteringNice;
+                                app.input_state.message = None;
+                            } else {
+                                app.input_state.message = Some((format!("Error: Process with PID {} not found", pid), true));
                             }
                         }
+                    }
+                }
+                KeyCode::Up => {
+                    if app.scroll_offset > 0 {
+                        app.scroll_offset -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    let process_len = app.process_manager.get_processes().len();
+                    if app.scroll_offset < process_len.saturating_sub(app.display_limit) {
+                        app.scroll_offset += 1;
+                    }
+                }
+                KeyCode::Esc => {
+                    app.view_mode = ViewMode::ProcessList;
+                    app.input_state = InputState::default();
+                    app.nice_input_state = NiceInputState::SelectingPid;
+                }
+                _ => {}
+            }
+        }
+        NiceInputState::EnteringNice => {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if c.is_ascii_digit() || (c == '-' && app.input_state.nice_input.is_empty()) {
+                        app.input_state.nice_input.push(c);
+                    }
+                }
+                KeyCode::Backspace => {
+                    if app.input_state.nice_input.is_empty() {
+                        app.nice_input_state = NiceInputState::SelectingPid;
+                        app.input_state.message = None;
                     } else {
-                        // Process nice value input
-                        match nice_input.trim().parse::<i32>() {
-                            Ok(nice) if nice >= -20 && nice <= 19 => {
-                                let pid = pid_input.trim().parse::<u32>().unwrap(); // Safe because we validated earlier
-                                
-                                // Try to set niceness
-                                match process_manager.set_niceness(pid, nice) {
+                        app.input_state.nice_input.pop();
+                    }
+                }
+                KeyCode::Enter => {
+                    if !app.input_state.nice_input.is_empty() {
+                        if let (Ok(pid), Ok(nice)) = (
+                            app.input_state.pid_input.parse::<u32>(),
+                            app.input_state.nice_input.parse::<i32>(),
+                        ) {
+                            if nice >= -20 && nice <= 19 {
+                                match app.process_manager.set_niceness(pid, nice) {
                                     Ok(_) => {
-                                        message = format!("Successfully changed niceness of process {} to {}", pid, nice);
-                                        message_is_error = false;
-                                    },
+                                        app.input_state.message = Some((
+                                            format!("Successfully changed nice value of process {} to {}", pid, nice),
+                                            false
+                                        ));
+                                        // Wait a moment before returning to process list
+                                        app.input_state.message_timeout = Some(std::time::Instant::now() + Duration::from_secs(1));
+                                    }
                                     Err(e) => {
-                                        message = format!("Error: {}", e);
-                                        message_is_error = true;
+                                        app.input_state.message = Some((
+                                            format!("Error changing nice value: {}", e),
+                                            true
+                                        ));
                                     }
                                 }
-                                
-                                show_message_until = std::time::Instant::now() + Duration::from_secs(2);
-                                pid_input.clear();
-                                nice_input.clear();
-                                input_mode = true; // Return to PID input mode
-                            },
-                            _ => {
-                                message = "Invalid nice value. Must be between -20 and 19.".to_string();
-                                message_is_error = true;
-                                show_message_until = std::time::Instant::now() + Duration::from_secs(2);
-                                nice_input.clear();
+                            } else {
+                                app.input_state.message = Some((
+                                    "Error: Nice value must be between -20 and 19".to_string(),
+                                    true
+                                ));
                             }
                         }
                     }
-                },
-                
-                // Handle character input
-                Event::Key(KeyEvent { code: KeyCode::Char(c), .. }) => {
-                    if input_mode {
-                        pid_input.push(c);
-                    } else {
-                        nice_input.push(c);
-                    }
-                },
-                
+                }
+                KeyCode::Esc => {
+                    app.view_mode = ViewMode::ProcessList;
+                    app.input_state = InputState::default();
+                    app.nice_input_state = NiceInputState::SelectingPid;
+                }
                 _ => {}
             }
         }
     }
-}
-pub fn draw_filtered_processes(display_limit: usize, filter_mode: &str) -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new();
-    let mut scroll_offset: usize = 0;
-
-    execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-
-    // Leave raw mode so input works
-    disable_raw_mode()?;
-    
-    // Prompt and read
-    print!("Enter value to filter by ({}): ", filter_mode);
-    stdout.flush()?;
-    let mut filter_value = String::new();
-    std::io::stdin().read_line(&mut filter_value)?;
-    let filter_value = filter_value.trim().to_string();
-    
-    // Re-enter raw mode for UI control
-    enable_raw_mode()?;
-
-    loop {
-        process_manager.refresh();
-        let processes = process_manager.get_processes().clone();
-
-        // Apply filtering based on filter_mode
-        let filtered: Vec<ProcessInfo> = processes
-            .into_iter()
-            .filter(|p| match filter_mode {
-                "user" => p.user.as_deref().unwrap_or("").contains(&filter_value),
-                "name" => p.name.contains(&filter_value),
-                "pid" => filter_value.parse::<u32>().map_or(false, |v| p.pid == v),
-                "ppid" => filter_value.parse::<u32>().map_or(false, |v| p.parent_pid.unwrap_or(0) == v),
-                _ => true,
-            })
-            .collect();
-
-        if handle_ssort_key_event(&mut scroll_offset, display_limit, &mut true, filtered.len())? {
-            break;
-        }
-
-        // Draw UI
-        execute!(stdout, terminal::Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-        stdout.execute(SetAttribute(Attribute::Bold))?;
-        stdout.execute(SetForegroundColor(Color::White))?;
-        stdout.execute(SetBackgroundColor(Color::DarkGreen))?;
-
-        writeln!(
-            stdout,
-            "{:<6} {:<18} {:>6} {:>10} {:>8} {:>12} {:>8} {:>12} {:>10}",
-            "PID", "NAME", "CPU%", "MEM(MB)", "PPID", "START", "NICE", "USER", "STATUS",
-        )?;
-
-        stdout.execute(ResetColor)?;
-        stdout.execute(SetAttribute(Attribute::Reset))?;
-
-        let start_index = scroll_offset;
-        let end_index = (scroll_offset + display_limit).min(filtered.len());
-
-        for (i, process) in filtered.iter().enumerate().take(end_index).skip(start_index) {
-            execute!(stdout, cursor::MoveTo(0, (i - start_index + 1) as u16))?;
-
-            let name = if process.name.len() > 15 {
-                format!("{:.12}...", process.name)
-            } else {
-                process.name.clone()
-            };
-
-            let user = process.user.clone().unwrap_or_default();
-            let user_display = if user.len() > 10 {
-                format!("{:.7}...", user)
-            } else {
-                user
-            };
-
-            let memory_mb = process.memory_usage / (1024 * 1024);
-
-            if i % 2 == 0 {
-                stdout.execute(SetForegroundColor(Color::Cyan))?;
-            } else {
-                stdout.execute(SetForegroundColor(Color::Blue))?;
-            }
-
-            write!(stdout, "{:<6} ", process.pid)?;
-            stdout.execute(SetForegroundColor(Color::Green))?;
-            write!(stdout, "{:<18} ", name)?;
-
-            let cpu_color = match process.cpu_usage {
-                c if c > 50.0 => Color::Red,
-                c if c > 25.0 => Color::Yellow,
-                _ => Color::Green,
-            };
-            stdout.execute(SetForegroundColor(cpu_color))?;
-            write!(stdout, "{:>6.2} ", process.cpu_usage)?;
-
-            let mem_color = match memory_mb {
-                m if m > 1000 => Color::Red,
-                m if m > 500 => Color::Yellow,
-                _ => Color::Green,
-            };
-            stdout.execute(SetForegroundColor(mem_color))?;
-            write!(stdout, "{:>10} ", memory_mb)?;
-
-            stdout.execute(SetForegroundColor(Color::Cyan))?;
-            write!(stdout, "{:>8} ", process.parent_pid.unwrap_or(0))?;
-
-            stdout.execute(SetForegroundColor(Color::White))?;
-            write!(stdout, "{:>12} ", process.startTime)?;
-
-            stdout.execute(SetForegroundColor(Color::Yellow))?;
-            write!(stdout, "{:>8} ", process.nice)?;
-
-            stdout.execute(SetForegroundColor(Color::Magenta))?;
-            write!(stdout, "{:>12} ", user_display)?;
-
-            let status = process.status.trim();
-            let status_color = match status.to_lowercase().as_str() {
-                "running" => Color::Green,
-                "sleeping" => Color::Blue,
-                "stopped" => Color::Yellow,
-                "zombie" => Color::Red,
-                _ => Color::White,
-            };
-            stdout.execute(SetForegroundColor(status_color))?;
-            writeln!(stdout, "{:>10}", status)?;
-        }
-
-        // Footer
-        stdout.execute(ResetColor)?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        stdout.execute(SetForegroundColor(Color::Cyan))?;
-        writeln!(stdout, "[↑] Scroll Up  |  [↓] Scroll Down")?;
-
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-        stdout.execute(SetForegroundColor(Color::Blue))?;
-        writeln!(stdout, "[←] Back")?;
-
-        stdout.execute(ResetColor)?;
-        stdout.flush()?;
-        sleep(Duration::from_millis(100));
-    }
-
-    Ok(())
-}
-
-
-pub fn draw_kill_stop_menu() -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new(); // Initialize process manager
-    let mut scroll_offset: usize = 0;                // Track scrolling position
-    let display_limit: usize = 20;                   // Number of processes visible at a time
-    let process_len = process_manager.get_processes().len(); // Total number of processes
-
-    loop {
-        process_manager.refresh();
-        let processes = process_manager.get_processes().clone();
-        if handle_kill_stop_key_event(&mut scroll_offset, display_limit, process_len)? 
-        {
-            break; // Exit loop if 'back space' is pressed
-        }
-
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        
-        // Menu option 1 in yellow
-        stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "1. Kill")?;
-        
-        // Separator
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Menu option 2 in green
-        stdout.execute(SetForegroundColor(Color::Green))?;
-        write!(stdout, "2. Stop")?;
-        
-        // Separator
-        stdout.execute(ResetColor)?;
-        write!(stdout, "  |  ")?;
-        
-        // Back button in blue
-        stdout.execute(SetForegroundColor(Color::Blue))?;
-        writeln!(stdout, "[←] Back")?;
-        
-        // Reset color
-        stdout.execute(ResetColor)?;
-    }
-
-    stdout.flush()?;
-    sleep(Duration::from_millis(100));
-    
-    Ok(())
-}
-
-
-
-
-fn stop_process() -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new();
-    let mut scroll_offset: usize = 0;
-    let display_limit: usize = 20;
-    
-    // Input state variables
-    let mut pid_input = String::new();
-    let mut message = String::new();
-    let mut message_is_error = false;
-    let mut show_message_until = std::time::Instant::now();
-    
-    loop {
-        // Refresh process list
-        process_manager.refresh();
-        let processes = process_manager.get_processes();
-        
-        // Draw processes
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        
-        // Draw input prompt
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-        
-        // PID input prompt
-        stdout.execute(SetForegroundColor(Color::Yellow))?;
-        write!(stdout, "Enter PID to stop (or 'q' to quit): ")?;
-        
-        // Highlight input field
-        stdout.execute(SetForegroundColor(Color::White))?;
-        stdout.execute(SetAttribute(Attribute::Bold))?;
-        write!(stdout, "{}", pid_input)?;
-        stdout.execute(SetAttribute(Attribute::Reset))?;
-        
-        // Show message if needed
-        if std::time::Instant::now() < show_message_until {
-            execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-            
-            if message_is_error {
-                // Error message in red
-                stdout.execute(SetForegroundColor(Color::Red))?;
-            } else {
-                // Success message in green
-                stdout.execute(SetForegroundColor(Color::Green))?;
-            }
-            
-            write!(stdout, "{}", message)?;
-            stdout.execute(SetForegroundColor(Color::Reset))?;
-        }
-        
-        stdout.flush()?;
-        
-        // Handle input events
-        if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                // Handle quit
-                Event::Key(KeyEvent { code: KeyCode::Char('q'), .. }) => {
-                    return Ok(());  // Return to main menu
-                },
-                
-                // Handle scrolling
-                Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
-                    if scroll_offset > 0 {
-                        scroll_offset -= 1;
-                    }
-                },
-                Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
-                    if scroll_offset < processes.len().saturating_sub(display_limit) {
-                        scroll_offset += 1;
-                    }
-                },
-                
-                // Handle backspace
-                Event::Key(KeyEvent { code: KeyCode::Backspace, .. }) => {
-                    pid_input.pop();
-                },
-                
-                // Handle enter
-                Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
-                    match pid_input.trim().parse::<u32>() {
-                        Ok(pid) => {
-                            // Try to stop the process
-                            match process_manager.stop_process(pid) {
-                                Ok(_) => {
-                                    message = format!("Successfully stopped process {}", pid);
-                                    message_is_error = false;
-                                },
-                                Err(e) => {
-                                    message = format!("Error: {}", e);
-                                    message_is_error = true;
-                                }
-                            }
-                            
-                            show_message_until = std::time::Instant::now() + Duration::from_secs(2);
-                            pid_input.clear();
-                        },
-                        Err(_) => {
-                            message = "Invalid PID format. Please try again.".to_string();
-                            message_is_error = true;
-                            show_message_until = std::time::Instant::now() + Duration::from_secs(2);
-                            pid_input.clear();
-                        }
-                    }
-                },
-                
-                // Handle character input
-                Event::Key(KeyEvent { code: KeyCode::Char(c), .. }) => {
-                    pid_input.push(c);
-                },
-                
-                _ => {}
-            }
-        }
-    }
-}
-
-
-
-fn kill_process() -> std::io::Result<()> {
-    let mut stdout = stdout();
-    let mut process_manager = ProcessManager::new();
-    let mut scroll_offset: usize = 0;
-    let display_limit: usize = 20;
-    
-    // Input state variables
-    let mut pid_input = String::new();
-    let mut message = String::new();
-    let mut message_is_error = false;
-    let mut show_message_until = std::time::Instant::now();
-    
-    loop {
-        // Refresh process list
-        process_manager.refresh();
-        let processes = process_manager.get_processes();
-        
-        // Draw processes
-        draw_processes(&processes, scroll_offset, display_limit)?;
-        
-        // Draw input prompt
-        execute!(stdout, cursor::MoveTo(0, (display_limit + 2) as u16))?;
-        stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-        
-        // PID input prompt
-        stdout.execute(SetForegroundColor(Color::Red))?;
-        write!(stdout, "Enter PID to kill (or 'q' to quit): ")?;
-        
-        // Highlight input field
-        stdout.execute(SetForegroundColor(Color::White))?;
-        stdout.execute(SetAttribute(Attribute::Bold))?;
-        write!(stdout, "{}", pid_input)?;
-        stdout.execute(SetAttribute(Attribute::Reset))?;
-        
-        // Show message if needed
-        if std::time::Instant::now() < show_message_until {
-            execute!(stdout, cursor::MoveTo(0, (display_limit + 3) as u16))?;
-            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
-            
-            if message_is_error {
-                // Error message in red
-                stdout.execute(SetForegroundColor(Color::Red))?;
-            } else {
-                // Success message in green
-                stdout.execute(SetForegroundColor(Color::Green))?;
-            }
-            
-            write!(stdout, "{}", message)?;
-            stdout.execute(SetForegroundColor(Color::Reset))?;
-        }
-        
-        stdout.flush()?;
-        
-        // Handle input events
-        if event::poll(Duration::from_millis(100))? {
-            match event::read()? {
-                // Handle quit
-                Event::Key(KeyEvent { code: KeyCode::Char('q'), .. }) => {
-                    return Ok(());  // Return to main menu
-                },
-                
-                // Handle scrolling
-                Event::Key(KeyEvent { code: KeyCode::Up, .. }) => {
-                    if scroll_offset > 0 {
-                        scroll_offset -= 1;
-                    }
-                },
-                Event::Key(KeyEvent { code: KeyCode::Down, .. }) => {
-                    if scroll_offset < processes.len().saturating_sub(display_limit) {
-                        scroll_offset += 1;
-                    }
-                },
-                
-                // Handle backspace
-                Event::Key(KeyEvent { code: KeyCode::Backspace, .. }) => {
-                    pid_input.pop();
-                },
-                
-                // Handle enter
-                Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
-                    match pid_input.trim().parse::<u32>() {
-                        Ok(pid) => {
-                            // Try to kill the process
-                            match process_manager.kill_process(pid) {
-                                Ok(_) => {
-                                    message = format!("Successfully killed process {}", pid);
-                                    message_is_error = false;
-                                },
-                                Err(e) => {
-                                    message = format!("Error: {}", e);
-                                    message_is_error = true;
-                                }
-                            }
-                            
-                            show_message_until = std::time::Instant::now() + Duration::from_secs(2);
-                            pid_input.clear();
-                        },
-                        Err(_) => {
-                            message = "Invalid PID format. Please try again.".to_string();
-                            message_is_error = true;
-                            show_message_until = std::time::Instant::now() + Duration::from_secs(2);
-                            pid_input.clear();
-                        }
-                    }
-                },
-                
-                // Handle character input
-                Event::Key(KeyEvent { code: KeyCode::Char(c), .. }) => {
-                    pid_input.push(c);
-                },
-                
-                _ => {}
-            }
-        }
-    }
+    Ok(false)
 }

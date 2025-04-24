@@ -28,7 +28,7 @@ use ratatui::{
 #[derive(PartialEq)]
 enum ViewMode {
     ProcessList,
-    GraphView,
+    Statistics,  // Renamed from GraphView
     FilterSort,
     Sort,
     Filter,
@@ -67,6 +67,14 @@ enum NiceInputState {
     EnteringNice,
 }
 
+// StatisticsTab enum to track the current statistics tab
+#[derive(PartialEq)]
+pub enum StatisticsTab {
+    Graphs,
+    SystemStats,
+    Information,
+}
+
 // App state
 struct App {
     process_manager: ProcessManager,
@@ -80,6 +88,7 @@ struct App {
     filter_mode: Option<String>,
     stats_scroll_offset: usize,  // New field for statistics scrolling
     nice_input_state: NiceInputState,  // Track which input we're currently handling
+    current_stats_tab: StatisticsTab,  // New field for tracking current statistics tab
 }
 
 impl App {
@@ -96,6 +105,7 @@ impl App {
             filter_mode: None,
             stats_scroll_offset: 0,  // Initialize stats scroll offset
             nice_input_state: NiceInputState::SelectingPid,
+            current_stats_tab: StatisticsTab::Graphs,  // Default to Graphs tab
         }
     }
 
@@ -131,14 +141,20 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
-    
+
     loop {
         app.refresh();
 
-        terminal.draw(|f| {
+                terminal.draw(|f| {
             match app.view_mode {
                 ViewMode::ProcessList => draw_process_list(f, &app),
-                ViewMode::GraphView => graph::render_graph_dashboard(f, &app.process_manager, &app.graph_data, app.stats_scroll_offset),
+                ViewMode::Statistics => graph::render_graph_dashboard(
+                    f,
+                    &app.process_manager,
+                    &app.graph_data,
+                    app.stats_scroll_offset,
+                    &app.current_stats_tab
+                ),
                 ViewMode::FilterSort => draw_filter_sort_menu(f, &app),
                 ViewMode::Sort => draw_sort_menu(f, &app),
                 ViewMode::Filter => draw_filter_menu(f, &app),
@@ -276,7 +292,7 @@ fn draw_process_list(f: &mut Frame, app: &App) {
             Span::raw("| "),
             Span::styled("[3] Kill/Stop  ", Style::default().fg(Color::Red)),
             Span::raw("| "),
-            Span::styled("[Tab] Graphs  ", Style::default().fg(Color::Blue)),
+            Span::styled("[S] Statistics  ", Style::default().fg(Color::Blue)),
             Span::raw("| "),
             Span::styled("[q] Quit", Style::default().fg(Color::White)),
         ]),
@@ -722,7 +738,7 @@ fn handle_events(app: &mut App) -> Result<bool, Box<dyn Error>> {
         if let Event::Key(key) = event::read()? {
             let should_quit = match app.view_mode {
                 ViewMode::ProcessList => handle_process_list_input(key, app)?,
-                ViewMode::GraphView => handle_graph_view_input(key, app)?,
+                ViewMode::Statistics => handle_statistics_input(key, app)?,  // Renamed from handle_graph_view_input
                 ViewMode::FilterSort => handle_filter_sort_input(key, app)?,
                 ViewMode::Sort => handle_sort_input(key, app)?,
                 ViewMode::Filter => handle_filter_input(key, app)?,
@@ -750,7 +766,7 @@ fn handle_events(app: &mut App) -> Result<bool, Box<dyn Error>> {
 fn handle_process_list_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
     match key.code {
         KeyCode::Char('q') => return Ok(true),
-        KeyCode::Tab => app.view_mode = ViewMode::GraphView,
+        KeyCode::Char('s') | KeyCode::Char('S') => app.view_mode = ViewMode::Statistics,
         KeyCode::Up => {
             if app.scroll_offset > 0 {
                 app.scroll_offset -= 1;
@@ -770,24 +786,38 @@ fn handle_process_list_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<d
     Ok(false)
 }
 
-fn handle_graph_view_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+fn handle_statistics_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
-        KeyCode::Tab => {
+        KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('s') | KeyCode::Char('S') => {
             app.view_mode = ViewMode::ProcessList;
-            app.stats_scroll_offset = 0;  // Reset scroll when leaving graph view
+            app.stats_scroll_offset = 0;  // Reset scroll when leaving statistics view
+            app.current_stats_tab = StatisticsTab::Graphs;  // Reset to default tab
+        }
+        KeyCode::Char('1') => {
+            app.current_stats_tab = StatisticsTab::Graphs;
+            app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
+        }
+        KeyCode::Char('2') => {
+            app.current_stats_tab = StatisticsTab::SystemStats;
+            app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
+        }
+        KeyCode::Char('3') => {
+            app.current_stats_tab = StatisticsTab::Information;
+            app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
         }
         KeyCode::Up => {
-            if app.stats_scroll_offset > 0 {
+            if app.current_stats_tab == StatisticsTab::SystemStats && app.stats_scroll_offset > 0 {
                 app.stats_scroll_offset -= 1;
             }
         }
         KeyCode::Down => {
-            // We'll let the stats rendering function handle the maximum scroll
-            app.stats_scroll_offset += 1;
+            if app.current_stats_tab == StatisticsTab::SystemStats {
+                // We'll let the stats rendering function handle the maximum scroll
+                app.stats_scroll_offset += 1;
+                }
+            }
+            _ => {}
         }
-        _ => {}
-    }
     Ok(false)
 }
 
@@ -940,7 +970,7 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                             format!("PID {} selected. Press [1] to kill or [2] to stop", pid),
                             false
                         ));
-                    } else {
+            } else {
                         app.input_state.message = Some((
                             format!("Error: Process with PID {} not found", pid),
                             true
@@ -969,7 +999,7 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                             ));
                         }
                     }
-                } else {
+            } else {
                     app.input_state.message = Some((
                         format!("Error: Process with PID {} not found", pid),
                         true
@@ -982,7 +1012,7 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
             if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
                 if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
                     match app.process_manager.stop_process(pid) {
-                        Ok(_) => {
+                                Ok(_) => {
                             app.input_state.message = Some((
                                 format!("Successfully stopped process {}", pid),
                                 false
@@ -990,7 +1020,7 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                             app.input_state.message_timeout = Some(std::time::Instant::now() + Duration::from_secs(1));
                             app.input_state.pid_input.clear();
                         }
-                        Err(e) => {
+                                Err(e) => {
                             app.input_state.message = Some((
                                 format!("Error stopping process: {}", e),
                                 true
@@ -1043,7 +1073,7 @@ fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
                             if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
                                 app.nice_input_state = NiceInputState::EnteringNice;
                                 app.input_state.message = None;
-                            } else {
+            } else {
                                 app.input_state.message = Some((format!("Error: Process with PID {} not found", pid), true));
                             }
                         }
@@ -1091,7 +1121,7 @@ fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
                         ) {
                             if nice >= -20 && nice <= 19 {
                                 match app.process_manager.set_niceness(pid, nice) {
-                                    Ok(_) => {
+                                Ok(_) => {
                                         app.input_state.message = Some((
                                             format!("Successfully changed nice value of process {} to {}", pid, nice),
                                             false
@@ -1099,7 +1129,7 @@ fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
                                         // Wait a moment before returning to process list
                                         app.input_state.message_timeout = Some(std::time::Instant::now() + Duration::from_secs(1));
                                     }
-                                    Err(e) => {
+                                Err(e) => {
                                         app.input_state.message = Some((
                                             format!("Error changing nice value: {}", e),
                                             true

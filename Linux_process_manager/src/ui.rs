@@ -89,6 +89,8 @@ struct App {
     stats_scroll_offset: usize,  // New field for statistics scrolling
     nice_input_state: NiceInputState,  // Track which input we're currently handling
     current_stats_tab: StatisticsTab,  // New field for tracking current statistics tab
+    change_nice_scroll_offset: usize,
+    selected_process_index: usize,
 }
 
 impl App {
@@ -106,6 +108,8 @@ impl App {
             stats_scroll_offset: 0,  // Initialize stats scroll offset
             nice_input_state: NiceInputState::SelectingPid,
             current_stats_tab: StatisticsTab::Graphs,  // Default to Graphs tab
+            change_nice_scroll_offset: 0,
+            selected_process_index: 0,
         }
     }
 
@@ -178,6 +182,8 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
     
     Ok(())
 }
+
+const PROCESS_TABLE_HEIGHT: usize = 12;
 
 fn draw_process_list(f: &mut Frame, app: &App) {
     let size = f.size();
@@ -607,48 +613,67 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
 
 fn draw_change_nice_menu(f: &mut Frame, app: &App) {
     let size = f.size();
-    
-    let chunks = Layout::default()
+    // Add a visually prominent title box at the top
+    let title_chunk = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),    // Title
-            Constraint::Min(10),      // Process list
-            Constraint::Length(1),    // Selected PID display
-            Constraint::Length(1),    // Input box
+            Constraint::Length(3), // Make the title box taller
+            Constraint::Min(1),
+        ])
+        .split(size);
+    let title = Paragraph::new("Change Nice Value")
+        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).border_type(ratatui::widgets::BorderType::Thick));
+    f.render_widget(title, title_chunk[0]);
+    let size = title_chunk[1];
+    // Add a blank line below the title for spacing
+    let spacing_chunk = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(size);
+    let size = spacing_chunk[1];
+
+    let process_table_width = (size.width as f32 * 0.55) as u16;
+    let right_panel_width = size.width - process_table_width;
+    let process_table_height = size.height - 2;
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(process_table_width),
+            Constraint::Length(right_panel_width),
         ])
         .split(size);
 
-    // Title
-    let title = Paragraph::new("Change Nice Value")
-        .style(Style::default().fg(Color::Yellow))
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(title, chunks[0]);
-
-    // Process list
+    // --- LEFT: Process Table with highlight ---
     let processes = app.process_manager.get_processes();
     let headers = ["PID", "NAME", "NICE", "CPU%", "USER"];
-    
     let header_cells = headers
         .iter()
         .map(|h| Cell::from(*h).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
-    
     let header = Row::new(header_cells)
         .style(Style::default().bg(Color::Blue))
         .height(1);
 
-    let rows: Vec<Row> = processes
+    let visible_processes = processes
         .iter()
-        .skip(app.scroll_offset)
-        .take(app.display_limit)
+        .skip(app.change_nice_scroll_offset)
+        .take(process_table_height as usize - 2)
         .enumerate()
         .map(|(i, process)| {
-            let style = if i % 2 == 0 {
+            let idx = app.change_nice_scroll_offset + i;
+            let highlight = idx == app.selected_process_index;
+            let style = if highlight {
+                Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else if i % 2 == 0 {
                 Style::default().fg(Color::Cyan)
             } else {
                 Style::default().fg(Color::Blue)
             };
-
             Row::new(vec![
                 Cell::from(process.pid.to_string()).style(style),
                 Cell::from(process.name.clone()).style(Style::default().fg(Color::Green)),
@@ -657,11 +682,11 @@ fn draw_change_nice_menu(f: &mut Frame, app: &App) {
                 Cell::from(process.user.clone().unwrap_or_default()).style(Style::default().fg(Color::Magenta)),
             ])
         })
-        .collect();
+        .collect::<Vec<_>>();
 
-    let process_table = Table::new(rows)
+    let process_table = Table::new(visible_processes)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title("Processes (↑↓ to scroll)"))
+        .block(Block::default().borders(Borders::ALL).title("Processes (↑↓ to move, Enter to select)"))
         .widths(&[
             Constraint::Length(8),   // PID
             Constraint::Length(20),  // NAME
@@ -669,46 +694,46 @@ fn draw_change_nice_menu(f: &mut Frame, app: &App) {
             Constraint::Length(8),   // CPU%
             Constraint::Length(12),  // USER
         ]);
+    f.render_widget(process_table, chunks[0]);
 
-    f.render_widget(process_table, chunks[1]);
+    // --- RIGHT: Details, Input, Instructions, Status ---
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5), // Process details
+            Constraint::Length(5), // Input box
+            Constraint::Min(3),    // Instructions & status
+        ])
+        .split(chunks[1]);
 
-    // Selected PID display
-    match app.nice_input_state {
-        NiceInputState::SelectingPid => {
-            if !app.input_state.pid_input.is_empty() {
-                let selected_text = format!("Selected PID: {}", app.input_state.pid_input);
-                let selected_pid = Paragraph::new(selected_text)
-                    .style(Style::default().fg(Color::Yellow));
-                f.render_widget(selected_pid, chunks[2]);
-            }
-        }
-        NiceInputState::EnteringNice => {
-            let selected_text = format!("Selected PID: {}", app.input_state.pid_input);
-            let selected_pid = Paragraph::new(selected_text)
-                .style(Style::default().fg(Color::Yellow));
-            f.render_widget(selected_pid, chunks[2]);
-        }
-    }
-
-    // Input box
-    let input_text = match app.nice_input_state {
-        NiceInputState::SelectingPid => {
-            if let Some((msg, is_error)) = &app.input_state.message {
-                msg.clone()
-            } else {
-                format!("Please enter the PID: {}", app.input_state.pid_input)
-            }
-        }
-        NiceInputState::EnteringNice => {
-            if let Some((msg, is_error)) = &app.input_state.message {
-                msg.clone()
-            } else {
-                format!("Please enter the new nice value (-20 to 19): {}", app.input_state.nice_input)
-            }
-        }
+    // Process details
+    let selected = app.selected_process_index.min(processes.len().saturating_sub(1));
+    let proc = processes.get(selected);
+    let details = if let Some(proc) = proc {
+        vec![
+            Line::from(vec![Span::styled("Selected Process:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
+            Line::from(vec![Span::raw(format!("PID: {}", proc.pid))]),
+            Line::from(vec![Span::raw(format!("Name: {}", proc.name))]),
+            Line::from(vec![Span::raw(format!("User: {}", proc.user.clone().unwrap_or_default()))]),
+            Line::from(vec![Span::raw(format!("Current Nice: {}", proc.nice))]),
+        ]
+    } else {
+        vec![Line::from("No process selected.")]
     };
+    let details_box = Paragraph::new(details)
+        .block(Block::default().borders(Borders::ALL).title("Details"));
+    f.render_widget(details_box, right_chunks[0]);
 
-    let input_style = if let Some((_, is_error)) = &app.input_state.message {
+    // Input box for nice value
+    let input_text = if app.nice_input_state == NiceInputState::EnteringNice {
+        format!("New nice value (-20 to 19): {}", app.input_state.nice_input)
+    } else {
+        "Press Enter to change nice value".to_string()
+    };
+    // If in selection mode or after a message, use yellow (neutral) for input box
+    let input_style = if app.nice_input_state == NiceInputState::SelectingPid {
+        Style::default().fg(Color::Yellow)
+    } else if let Some((_, is_error)) = &app.input_state.message {
         if *is_error {
             Style::default().fg(Color::Red)
         } else {
@@ -717,10 +742,30 @@ fn draw_change_nice_menu(f: &mut Frame, app: &App) {
     } else {
         Style::default().fg(Color::Yellow)
     };
-
     let input_box = Paragraph::new(input_text)
-        .style(input_style);
-    f.render_widget(input_box, chunks[3]);
+        .style(input_style)
+        .block(Block::default().borders(Borders::ALL).title("Nice Value Input"));
+    f.render_widget(input_box, right_chunks[1]);
+
+    // Instructions and status
+    let mut info = vec![
+        Line::from(vec![Span::styled(
+            "Instructions:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        )]),
+        Line::from(vec![Span::raw("- Use ↑/↓ to move selection in the process list.")]),
+        Line::from(vec![Span::raw("- Press Enter to select a process and input a new nice value.")]),
+        Line::from(vec![Span::raw("- Type the new nice value, then Enter to apply." )]),
+        Line::from(vec![Span::raw("- Press Esc to cancel and return.")]),
+    ];
+    if let Some((msg, is_error)) = &app.input_state.message {
+        info.push(Line::from(vec![Span::styled(
+            msg,
+            if *is_error { Style::default().fg(Color::Red) } else { Style::default().fg(Color::Green) }
+        )]));
+    }
+    let info_box = Paragraph::new(info)
+        .block(Block::default().borders(Borders::ALL).title("Help & Status"));
+    f.render_widget(info_box, right_chunks[2]);
 }
 
 fn get_status_style(status: &str) -> Style {
@@ -806,18 +851,47 @@ fn handle_statistics_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn
             app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
         }
         KeyCode::Up => {
-            if app.current_stats_tab == StatisticsTab::SystemStats && app.stats_scroll_offset > 0 {
-                app.stats_scroll_offset -= 1;
+            if app.current_stats_tab == StatisticsTab::SystemStats {
+                // Smooth scrolling - move up by 1/4 of the viewport
+                let scroll_amount = 3;
+                app.stats_scroll_offset = app.stats_scroll_offset.saturating_sub(scroll_amount);
             }
         }
         KeyCode::Down => {
             if app.current_stats_tab == StatisticsTab::SystemStats {
-                // We'll let the stats rendering function handle the maximum scroll
-                app.stats_scroll_offset += 1;
-                }
+                // Smooth scrolling - move down by 1/4 of the viewport
+                let scroll_amount = 3;
+                app.stats_scroll_offset = app.stats_scroll_offset.saturating_add(scroll_amount);
             }
-            _ => {}
         }
+        KeyCode::PageUp => {
+            if app.current_stats_tab == StatisticsTab::SystemStats {
+                // Page up - move by half the viewport
+                let scroll_amount = 10;
+                app.stats_scroll_offset = app.stats_scroll_offset.saturating_sub(scroll_amount);
+            }
+        }
+        KeyCode::PageDown => {
+            if app.current_stats_tab == StatisticsTab::SystemStats {
+                // Page down - move by half the viewport
+                let scroll_amount = 10;
+                app.stats_scroll_offset = app.stats_scroll_offset.saturating_add(scroll_amount);
+        }
+        }
+        KeyCode::Home => {
+            if app.current_stats_tab == StatisticsTab::SystemStats {
+                // Jump to top
+                app.stats_scroll_offset = 0;
+            }
+        }
+        KeyCode::End => {
+            if app.current_stats_tab == StatisticsTab::SystemStats {
+                // Jump to bottom (will be bounded by max_scroll in the render function)
+                app.stats_scroll_offset = usize::MAX;
+            }
+        }
+        _ => {}
+    }
     Ok(false)
 }
 
@@ -1058,36 +1132,32 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
 }
 
 fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    let processes = app.process_manager.get_processes();
     match app.nice_input_state {
         NiceInputState::SelectingPid => {
             match key.code {
-                KeyCode::Char(c) if c.is_ascii_digit() => {
-                    app.input_state.pid_input.push(c);
-                }
-                KeyCode::Backspace => {
-                    app.input_state.pid_input.pop();
-                }
-                KeyCode::Enter => {
-                    if !app.input_state.pid_input.is_empty() {
-                        if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
-                            if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
-                                app.nice_input_state = NiceInputState::EnteringNice;
-                                app.input_state.message = None;
-            } else {
-                                app.input_state.message = Some((format!("Error: Process with PID {} not found", pid), true));
-                            }
+                KeyCode::Up => {
+                    if app.selected_process_index > 0 {
+                        app.selected_process_index -= 1;
+                        if app.selected_process_index < app.change_nice_scroll_offset {
+                            app.change_nice_scroll_offset = app.selected_process_index;
                         }
                     }
                 }
-                KeyCode::Up => {
-                    if app.scroll_offset > 0 {
-                        app.scroll_offset -= 1;
+                KeyCode::Down => {
+                    if app.selected_process_index + 1 < processes.len() {
+                        app.selected_process_index += 1;
+                        let bottom = app.change_nice_scroll_offset + (PROCESS_TABLE_HEIGHT - 2);
+                        if app.selected_process_index >= bottom {
+                            app.change_nice_scroll_offset += 1;
+                        }
                     }
                 }
-                KeyCode::Down => {
-                    let process_len = app.process_manager.get_processes().len();
-                    if app.scroll_offset < process_len.saturating_sub(app.display_limit) {
-                        app.scroll_offset += 1;
+                KeyCode::Enter => {
+                    if !processes.is_empty() {
+                        app.nice_input_state = NiceInputState::EnteringNice;
+                        app.input_state.nice_input.clear();
+                        app.input_state.message = None;
                     }
                 }
                 KeyCode::Esc => {
@@ -1106,34 +1176,32 @@ fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
                     }
                 }
                 KeyCode::Backspace => {
-                    if app.input_state.nice_input.is_empty() {
-                        app.nice_input_state = NiceInputState::SelectingPid;
-                        app.input_state.message = None;
-                    } else {
-                        app.input_state.nice_input.pop();
-                    }
+                    app.input_state.nice_input.pop();
                 }
                 KeyCode::Enter => {
                     if !app.input_state.nice_input.is_empty() {
-                        if let (Ok(pid), Ok(nice)) = (
-                            app.input_state.pid_input.parse::<u32>(),
+                        if let (Some(proc), Ok(nice)) = (
+                            processes.get(app.selected_process_index),
                             app.input_state.nice_input.parse::<i32>(),
                         ) {
                             if nice >= -20 && nice <= 19 {
-                                match app.process_manager.set_niceness(pid, nice) {
-                                Ok(_) => {
+                                match app.process_manager.set_niceness(proc.pid, nice) {
+                                    Ok(_) => {
                                         app.input_state.message = Some((
-                                            format!("Successfully changed nice value of process {} to {}", pid, nice),
+                                            format!("Successfully changed nice value of process {} to {}", proc.pid, nice),
                                             false
                                         ));
-                                        // Wait a moment before returning to process list
                                         app.input_state.message_timeout = Some(std::time::Instant::now() + Duration::from_secs(1));
+                                        app.nice_input_state = NiceInputState::SelectingPid;
+                                        app.input_state.nice_input.clear();
                                     }
-                                Err(e) => {
+                                    Err(e) => {
                                         app.input_state.message = Some((
                                             format!("Error changing nice value: {}", e),
                                             true
                                         ));
+                                        app.nice_input_state = NiceInputState::SelectingPid;
+                                        app.input_state.nice_input.clear();
                                     }
                                 }
                             } else {
@@ -1141,14 +1209,15 @@ fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
                                     "Error: Nice value must be between -20 and 19".to_string(),
                                     true
                                 ));
+                                app.nice_input_state = NiceInputState::SelectingPid;
+                                app.input_state.nice_input.clear();
                             }
                         }
                     }
                 }
                 KeyCode::Esc => {
-                    app.view_mode = ViewMode::ProcessList;
-                    app.input_state = InputState::default();
                     app.nice_input_state = NiceInputState::SelectingPid;
+                    app.input_state.nice_input.clear();
                 }
                 _ => {}
             }

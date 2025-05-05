@@ -2,11 +2,10 @@ use crate::process::ProcessManager;
 use crate::process::ProcessInfo;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
+// use std::collections::HashMap; //delete after debugging
 
 // Import Ratatui components
 use ratatui::{
-    Terminal,
     backend::Backend,
     widgets::{Block, Borders, Dataset, GraphType, Chart, Paragraph},
     layout::{Layout, Constraint, Direction, Alignment, Rect},
@@ -17,11 +16,11 @@ use ratatui::{
 use ratatui::style::{Style, Modifier, Color as RatatuiColor};
 
 // Import Crossterm components with explicit namespace
-use crossterm::{
-    style::{Color as CrosstermColor, SetForegroundColor, SetBackgroundColor, ResetColor, Attribute, SetAttribute},
-    ExecutableCommand, 
-    QueueableCommand,
-};
+// use crossterm::{
+//     style::{Color as CrosstermColor, SetForegroundColor, SetBackgroundColor, ResetColor, Attribute, SetAttribute},
+//     ExecutableCommand, 
+//     QueueableCommand,
+// };
 
 use crate::ui::StatisticsTab;  // Add this at the top with other imports
 
@@ -323,12 +322,24 @@ fn render_memory_bars(
         .label(format!("Mem [{:>4}M/{:>4}M]", total_memory, total_system_memory));
 
     // Swap bar (reading from /proc/swaps)
+
     let (swap_used, swap_total) = get_swap_info();
-    let swap_percentage = if swap_total > 0 {
-        ((swap_used as f64 / swap_total as f64) * 100.0) as u16
+    // let swap_percentage = if swap_total > 0 {
+    //     ((swap_used as f64 / swap_total as f64) * 100.0) as u16
+    // } else {
+    //     0
+    // };
+    
+    //fixes the panic that happens when screen is not full
+    let swap_percentage = if swap_total > 0 && swap_used <= swap_total {
+        let ratio = swap_used as f64 / swap_total as f64;
+        let percent = (ratio * 100.0).clamp(0.0, 100.0).round();
+        percent as u16
     } else {
         0
     };
+    
+    
 
     let swap_gauge = ratatui::widgets::Gauge::default()
         .gauge_style(Style::default().fg(get_usage_color(swap_percentage as f32)))

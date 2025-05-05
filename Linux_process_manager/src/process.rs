@@ -1,7 +1,7 @@
 use sysinfo::{ProcessExt, System, SystemExt, PidExt, UserExt};
 use procfs::process::Process as ProcfsProcess; // Import procfs for nice value
 use std::convert::TryInto; // Import the try_into function
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{Local, TimeZone};
 use libc::{self, c_int};
 
 #[derive(Clone)] 

@@ -16,7 +16,7 @@ use ratatui::{
     prelude::*,
     widgets::{
         Block, Borders, List, ListItem, Paragraph, Table, Row, Cell,
-        Cell as TableCell,  // Alias to avoid conflict with std::cell::Cell
+        // Cell as TableCell,  // Alias to avoid conflict with std::cell::Cell //delete after debugging
     },
     layout::{Layout, Constraint, Direction, Alignment},
     style::{Style, Modifier, Color},

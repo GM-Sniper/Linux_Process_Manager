@@ -5,6 +5,7 @@ use std::thread::sleep;
 use std::time::Duration;
 use process::ProcessManager;
 use std::error::Error;
+use crate::graph::{GraphData, render_tabs, render_graphs_tab, render_overview_tab, render_cpu_tab, render_memory_tab, render_disk_tab, render_processes_tab, render_advanced_tab};
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent},
@@ -35,6 +36,9 @@ enum ViewMode {
     FilterInput,
     KillStop,
     ChangeNice,
+    PerProcessGraph, // Added for new feature
+    ProcessLog,      // Added for new feature
+    Help,            // Added for new feature
 }
 
 // Input state for various operations
@@ -71,8 +75,15 @@ enum NiceInputState {
 #[derive(PartialEq)]
 pub enum StatisticsTab {
     Graphs,
-    SystemStats,
-    Information,
+    Overview,
+    CPU,
+    Memory,
+    PerProcessGraph, // New tab for per-process graphing
+    ProcessLog,      // New tab for process logging
+    Disk,
+    Processes,
+    Advanced,
+    Help,            // New tab for help
 }
 
 // App state
@@ -165,6 +176,24 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
                 ViewMode::FilterInput => draw_filter_input_menu(f, &app),
                 ViewMode::KillStop => draw_kill_stop_menu(f, &app),
                 ViewMode::ChangeNice => draw_change_nice_menu(f, &app),
+                ViewMode::PerProcessGraph => {
+                    let size = f.size();
+                    let para = Paragraph::new("Per-Process Graph View (to be implemented)")
+                        .block(Block::default().borders(Borders::ALL).title("Per-Process Graph"));
+                    f.render_widget(para, size);
+                },
+                ViewMode::ProcessLog => {
+                    let size = f.size();
+                    let para = Paragraph::new("Process Log View (to be implemented)")
+                        .block(Block::default().borders(Borders::ALL).title("Process Log"));
+                    f.render_widget(para, size);
+                },
+                ViewMode::Help => {
+                    let size = f.size();
+                    let para = Paragraph::new("Help View (to be implemented)")
+                        .block(Block::default().borders(Borders::ALL).title("Help"));
+                    f.render_widget(para, size);
+                },
             }
         })?;
 
@@ -297,6 +326,12 @@ fn draw_process_list(f: &mut Frame, app: &App) {
             Span::styled("[2] Change Nice  ", Style::default().fg(Color::Green)),
             Span::raw("| "),
             Span::styled("[3] Kill/Stop  ", Style::default().fg(Color::Red)),
+            Span::raw("| "),
+            Span::styled("[4] Per-Process Graph  ", Style::default().fg(Color::Magenta)),
+            Span::raw("| "),
+            Span::styled("[5] Process Log  ", Style::default().fg(Color::Cyan)),
+            Span::raw("| "),
+            Span::styled("[6] Help  ", Style::default().fg(Color::Yellow)),
             Span::raw("| "),
             Span::styled("[S] Statistics  ", Style::default().fg(Color::Blue)),
             Span::raw("| "),
@@ -783,13 +818,14 @@ fn handle_events(app: &mut App) -> Result<bool, Box<dyn Error>> {
         if let Event::Key(key) = event::read()? {
             let should_quit = match app.view_mode {
                 ViewMode::ProcessList => handle_process_list_input(key, app)?,
-                ViewMode::Statistics => handle_statistics_input(key, app)?,  // Renamed from handle_graph_view_input
+                ViewMode::Statistics => handle_statistics_input(key, app)?,
                 ViewMode::FilterSort => handle_filter_sort_input(key, app)?,
                 ViewMode::Sort => handle_sort_input(key, app)?,
                 ViewMode::Filter => handle_filter_input(key, app)?,
                 ViewMode::FilterInput => handle_filter_input(key, app)?,
                 ViewMode::KillStop => handle_kill_stop_input(key, app)?,
                 ViewMode::ChangeNice => handle_change_nice_input(key, app)?,
+                ViewMode::PerProcessGraph | ViewMode::ProcessLog | ViewMode::Help => false,
             };
             if should_quit {
                 return Ok(true);
@@ -826,6 +862,9 @@ fn handle_process_list_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<d
         KeyCode::Char('1') => app.view_mode = ViewMode::FilterSort,
         KeyCode::Char('2') => app.view_mode = ViewMode::ChangeNice,
         KeyCode::Char('3') => app.view_mode = ViewMode::KillStop,
+        KeyCode::Char('4') => app.view_mode = ViewMode::PerProcessGraph,
+        KeyCode::Char('5') => app.view_mode = ViewMode::ProcessLog,
+        KeyCode::Char('6') => app.view_mode = ViewMode::Help,
         _ => {}
     }
     Ok(false)
@@ -843,49 +882,69 @@ fn handle_statistics_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn
             app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
         }
         KeyCode::Char('2') => {
-            app.current_stats_tab = StatisticsTab::SystemStats;
+            app.current_stats_tab = StatisticsTab::Overview;
             app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
         }
         KeyCode::Char('3') => {
-            app.current_stats_tab = StatisticsTab::Information;
+            app.current_stats_tab = StatisticsTab::CPU;
+            app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
+        }
+        KeyCode::Char('4') => {
+            app.current_stats_tab = StatisticsTab::Memory;
+            app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
+        }
+        KeyCode::Char('5') => {
+            app.current_stats_tab = StatisticsTab::Disk;
+            app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
+        }
+        KeyCode::Char('6') => {
+            app.current_stats_tab = StatisticsTab::Processes;
+            app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
+        }
+        KeyCode::Char('7') => {
+            app.current_stats_tab = StatisticsTab::Advanced;
+            app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
+        }
+        KeyCode::Char('8') => {
+            app.current_stats_tab = StatisticsTab::Help;
             app.stats_scroll_offset = 0;  // Reset scroll when switching tabs
         }
         KeyCode::Up => {
-            if app.current_stats_tab == StatisticsTab::SystemStats {
+            if app.current_stats_tab == StatisticsTab::CPU {
                 // Smooth scrolling - move up by 1/4 of the viewport
                 let scroll_amount = 3;
                 app.stats_scroll_offset = app.stats_scroll_offset.saturating_sub(scroll_amount);
             }
         }
         KeyCode::Down => {
-            if app.current_stats_tab == StatisticsTab::SystemStats {
+            if app.current_stats_tab == StatisticsTab::CPU {
                 // Smooth scrolling - move down by 1/4 of the viewport
                 let scroll_amount = 3;
                 app.stats_scroll_offset = app.stats_scroll_offset.saturating_add(scroll_amount);
             }
         }
         KeyCode::PageUp => {
-            if app.current_stats_tab == StatisticsTab::SystemStats {
+            if app.current_stats_tab == StatisticsTab::CPU {
                 // Page up - move by half the viewport
                 let scroll_amount = 10;
                 app.stats_scroll_offset = app.stats_scroll_offset.saturating_sub(scroll_amount);
             }
         }
         KeyCode::PageDown => {
-            if app.current_stats_tab == StatisticsTab::SystemStats {
+            if app.current_stats_tab == StatisticsTab::CPU {
                 // Page down - move by half the viewport
                 let scroll_amount = 10;
                 app.stats_scroll_offset = app.stats_scroll_offset.saturating_add(scroll_amount);
         }
         }
         KeyCode::Home => {
-            if app.current_stats_tab == StatisticsTab::SystemStats {
+            if app.current_stats_tab == StatisticsTab::CPU {
                 // Jump to top
                 app.stats_scroll_offset = 0;
             }
         }
         KeyCode::End => {
-            if app.current_stats_tab == StatisticsTab::SystemStats {
+            if app.current_stats_tab == StatisticsTab::CPU {
                 // Jump to bottom (will be bounded by max_scroll in the render function)
                 app.stats_scroll_offset = usize::MAX;
             }
@@ -1224,4 +1283,47 @@ fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
         }
     }
     Ok(false)
+}
+
+fn render_graph_dashboard(
+    frame: &mut ratatui::Frame,
+    process_manager: &ProcessManager,
+    graph_data: &GraphData,
+    stats_scroll_offset: usize,
+    current_tab: &StatisticsTab,
+) {
+    let size = frame.size();
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(size.height.saturating_sub(3)),
+        ])
+        .split(size);
+    render_tabs(frame, main_chunks[0], current_tab);
+    match current_tab {
+        StatisticsTab::Graphs => render_graphs_tab(frame, main_chunks[1], process_manager, graph_data),
+        StatisticsTab::Overview => render_overview_tab(frame, main_chunks[1], process_manager),
+        StatisticsTab::CPU => render_cpu_tab(frame, main_chunks[1], process_manager, graph_data),
+        StatisticsTab::Memory => render_memory_tab(frame, main_chunks[1], process_manager),
+        StatisticsTab::PerProcessGraph => render_per_process_graph_tab(frame, main_chunks[1], process_manager),
+        StatisticsTab::ProcessLog => render_process_log_tab(frame, main_chunks[1], process_manager),
+        StatisticsTab::Disk => render_disk_tab(frame, main_chunks[1], process_manager),
+        StatisticsTab::Processes => render_processes_tab(frame, main_chunks[1], process_manager),
+        StatisticsTab::Advanced => render_advanced_tab(frame, main_chunks[1], process_manager),
+        StatisticsTab::Help => render_help_tab(frame, main_chunks[1]),
+    }
+}
+
+fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
+    // Will be implemented in per_process_graph.rs
+}
+
+fn render_process_log_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
+    // Will be implemented in process_log.rs
+}
+
+fn render_help_tab(frame: &mut ratatui::Frame, area: Rect) {
+    // Placeholder for help content
+    // Will display navigation and usage instructions
 }

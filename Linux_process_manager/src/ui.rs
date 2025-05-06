@@ -15,7 +15,7 @@ use ratatui::{
     prelude::*,
     widgets::{
         Block, Borders, List, ListItem, Paragraph, Table, Row, Cell,
-        // Cell as TableCell,  // Alias to avoid conflict with std::cell::Cell //delete after debugging
+        Dataset, GraphType, Chart,
     },
     layout::{Layout, Constraint, Direction, Alignment},
     style::{Style, Modifier, Color},
@@ -98,6 +98,8 @@ struct App {
     current_stats_tab: StatisticsTab,  // New field for tracking current statistics tab
     change_nice_scroll_offset: usize,
     selected_process_index: usize,
+    per_process_graph_scroll_offset: usize,  // Add this
+    selected_process_for_graph: Option<u32>,  // Add this
 }
 
 impl App {
@@ -117,6 +119,8 @@ impl App {
             current_stats_tab: StatisticsTab::Graphs,  // Default to Graphs tab
             change_nice_scroll_offset: 0,
             selected_process_index: 0,
+            per_process_graph_scroll_offset: 0,  // Add this
+            selected_process_for_graph: None,    // Add this
         }
     }
 
@@ -141,7 +145,7 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
     loop {
         app.refresh();
 
-                terminal.draw(|f| {
+        terminal.draw(|f| {
             match app.view_mode {
                 ViewMode::ProcessList => draw_process_list(f, &app),
                 ViewMode::Statistics => graph::render_graph_dashboard(
@@ -155,12 +159,7 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
                 ViewMode::FilterInput => draw_filter_input_menu(f, &app),
                 ViewMode::KillStop => draw_kill_stop_menu(f, &app),
                 ViewMode::ChangeNice => draw_change_nice_menu(f, &app),
-                ViewMode::PerProcessGraph => {
-                    let size = f.size();
-                    let para = Paragraph::new("Per-Process Graph View (to be implemented)")
-                        .block(Block::default().borders(Borders::ALL).title("Per-Process Graph"));
-                    f.render_widget(para, size);
-                },
+                ViewMode::PerProcessGraph => render_per_process_graph_tab(f, f.size(), &app),
                 ViewMode::ProcessLog => {
                     let size = f.size();
                     let para = Paragraph::new("Process Log View (to be implemented)")
@@ -795,31 +794,63 @@ fn get_status_style(status: &str) -> Style {
 fn handle_events(app: &mut App) -> Result<bool, Box<dyn Error>> {
     if event::poll(Duration::from_millis(100))? {
         if let Event::Key(key) = event::read()? {
-            let should_quit = match app.view_mode {
-                ViewMode::ProcessList => handle_process_list_input(key, app)?,
-                ViewMode::Statistics => handle_statistics_input(key, app)?,
-                ViewMode::FilterSort => handle_filter_sort_input(key, app)?,
-                ViewMode::Sort => handle_sort_input(key, app)?,
-                ViewMode::Filter => handle_filter_input(key, app)?,
-                ViewMode::FilterInput => handle_filter_input(key, app)?,
-                ViewMode::KillStop => handle_kill_stop_input(key, app)?,
-                ViewMode::ChangeNice => handle_change_nice_input(key, app)?,
-                ViewMode::PerProcessGraph | ViewMode::ProcessLog | ViewMode::Help => false,
-            };
-            if should_quit {
-                return Ok(true);
+            match app.view_mode {
+                ViewMode::ProcessList => {
+                    if handle_process_list_input(key, app)? {
+                        return Ok(true);
+                    }
+                }
+                ViewMode::Statistics => {
+                    if handle_statistics_input(key, app)? {
+                        return Ok(true);
+                    }
+                }
+                ViewMode::FilterSort => {
+                    if handle_filter_sort_input(key, app)? {
+                        return Ok(true);
+                    }
+                }
+                ViewMode::Sort => {
+                    if handle_sort_input(key, app)? {
+                        return Ok(true);
+                    }
+                }
+                ViewMode::Filter => {
+                    if handle_filter_input(key, app)? {
+                        return Ok(true);
+                    }
+                }
+                ViewMode::FilterInput => {
+                    if handle_filter_input(key, app)? {
+                        return Ok(true);
+                    }
+                }
+                ViewMode::KillStop => {
+                    if handle_kill_stop_input(key, app)? {
+                        return Ok(true);
+                    }
+                }
+                ViewMode::ChangeNice => {
+                    if handle_change_nice_input(key, app)? {
+                        return Ok(true);
+                    }
+                }
+                ViewMode::PerProcessGraph => {
+                    if handle_per_process_graph_input(key, app)? {
+                        return Ok(true);
+                    }
+                }
+                ViewMode::ProcessLog => {
+                    // Handle process log input
+                    return Ok(false);
+                }
+                ViewMode::Help => {
+                    // Handle help input
+                    return Ok(false);
+                }
             }
         }
     }
-
-    // Check for message timeout
-    if let Some(timeout) = app.input_state.message_timeout {
-        if std::time::Instant::now() >= timeout {
-            app.input_state.message = None;
-            app.input_state.message_timeout = None;
-        }
-    }
-
     Ok(false)
 }
 
@@ -847,7 +878,12 @@ fn handle_process_list_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<d
         KeyCode::Char('1') => app.view_mode = ViewMode::FilterSort,
         KeyCode::Char('2') => app.view_mode = ViewMode::ChangeNice,
         KeyCode::Char('3') => app.view_mode = ViewMode::KillStop,
-        KeyCode::Char('4') => app.view_mode = ViewMode::PerProcessGraph,
+        KeyCode::Char('4') => {
+            app.view_mode = ViewMode::PerProcessGraph;
+            app.selected_process_index = 0;
+            app.per_process_graph_scroll_offset = 0;
+            app.selected_process_for_graph = None;
+        }
         KeyCode::Char('5') => app.view_mode = ViewMode::ProcessLog,
         KeyCode::Char('6') => app.view_mode = ViewMode::Help,
         _ => {}
@@ -1270,13 +1306,213 @@ fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
     Ok(false)
 }
 
-fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect) {
-    let text = vec![
-        Line::from(vec![Span::styled("Per-Process Graph View", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
-        Line::from(vec![Span::styled("Select a process to view its resource usage graph", Style::default().fg(Color::Gray))]),
-    ];
-    let widget = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Per-Process Graph"));
-    frame.render_widget(widget, area);
+fn handle_per_process_graph_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    match key.code {
+        KeyCode::Char('q') => {
+            app.view_mode = ViewMode::ProcessList;
+            app.selected_process_for_graph = None;
+            Ok(true)
+        }
+        KeyCode::Up => {
+            if let Some(_pid) = app.selected_process_for_graph {
+                // If we're viewing a graph, go back to the list
+                app.selected_process_for_graph = None;
+            } else {
+                // Move selection up in the process list
+                if app.selected_process_index > 0 {
+                    app.selected_process_index -= 1;
+                    if app.selected_process_index < app.per_process_graph_scroll_offset {
+                        app.per_process_graph_scroll_offset = app.selected_process_index;
+                    }
+                }
+            }
+            Ok(false)
+        }
+        KeyCode::Down => {
+            if let Some(_pid) = app.selected_process_for_graph {
+                // If we're viewing a graph, go back to the list
+                app.selected_process_for_graph = None;
+            } else {
+                // Move selection down in the process list
+                let max_index = app.process_manager.get_processes().len().saturating_sub(1);
+                if app.selected_process_index < max_index {
+                    app.selected_process_index += 1;
+                    if app.selected_process_index >= app.per_process_graph_scroll_offset + PROCESS_TABLE_HEIGHT - 2 {
+                        app.per_process_graph_scroll_offset = app.selected_process_index - (PROCESS_TABLE_HEIGHT - 3);
+                    }
+                }
+            }
+            Ok(false)
+        }
+        KeyCode::Enter => {
+            if app.selected_process_for_graph.is_none() {
+                // Select the process for graphing
+                if let Some(process) = app.process_manager.get_processes().get(app.selected_process_index) {
+                    app.selected_process_for_graph = Some(process.pid);
+                }
+            }
+            Ok(false)
+        }
+        KeyCode::Esc => {
+            if app.selected_process_for_graph.is_some() {
+                // Return to process list
+                app.selected_process_for_graph = None;
+            } else {
+                // Return to main view
+                app.view_mode = ViewMode::ProcessList;
+            }
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Min(0),     // Content
+        ])
+        .split(area);
+
+    // Title
+    let title = Paragraph::new("Per-Process Graph View")
+        .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    frame.render_widget(title, chunks[0]);
+
+    if let Some(pid) = app.selected_process_for_graph {
+        // Show graphs for selected process
+        let graph_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(50),  // CPU Graph
+                Constraint::Percentage(50),  // Memory Graph
+            ])
+            .split(chunks[1]);
+
+        // Get process info
+        if let Some(process) = app.process_manager.get_processes().iter().find(|p| p.pid == pid) {
+            // Get history data
+            if let Some((cpu_history, mem_history)) = app.graph_data.get_process_history(pid) {
+                // CPU Graph
+                let cpu_data: Vec<(f64, f64)> = cpu_history.iter()
+                    .enumerate()
+                    .map(|(i, &usage)| (i as f64, usage as f64))
+                    .collect();
+
+                let cpu_dataset = Dataset::default()
+                    .name("CPU Usage")
+                    .marker(ratatui::symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Cyan))
+                    .data(&cpu_data);
+
+                let cpu_chart = Chart::new(vec![cpu_dataset])
+                    .block(Block::default()
+                        .title(format!("CPU Usage for {} (PID: {})", process.name, pid))
+                        .borders(Borders::ALL))
+                    .x_axis(ratatui::widgets::Axis::default()
+                        .bounds([0.0, cpu_history.len() as f64])
+                        .labels(vec![]))
+                    .y_axis(ratatui::widgets::Axis::default()
+                        .bounds([0.0, 100.0])
+                        .labels(vec!["0%".into(), "50%".into(), "100%".into()]));
+
+                frame.render_widget(cpu_chart, graph_chunks[0]);
+
+                // Memory Graph
+                let memory_data: Vec<(f64, f64)> = mem_history.iter()
+                    .enumerate()
+                    .map(|(i, &usage)| (i as f64, usage as f64 / (1024.0 * 1024.0)))
+                    .collect();
+
+                let max_memory = memory_data.iter()
+                    .map(|&(_, y)| y)
+                    .fold(0.0, f64::max)
+                    .max(1.0);  // Ensure we have at least 1MB range
+
+                let memory_dataset = Dataset::default()
+                    .name("Memory Usage")
+                    .marker(ratatui::symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::Green))
+                    .data(&memory_data);
+
+                let memory_chart = Chart::new(vec![memory_dataset])
+                    .block(Block::default()
+                        .title(format!("Memory Usage for {} (PID: {})", process.name, pid))
+                        .borders(Borders::ALL))
+                    .x_axis(ratatui::widgets::Axis::default()
+                        .bounds([0.0, mem_history.len() as f64])
+                        .labels(vec![]))
+                    .y_axis(ratatui::widgets::Axis::default()
+                        .bounds([0.0, max_memory * 1.2])
+                        .labels(vec![
+                            "0 MB".into(),
+                            format!("{:.1} MB", max_memory / 2.0).into(),
+                            format!("{:.1} MB", max_memory).into(),
+                        ]));
+
+                frame.render_widget(memory_chart, graph_chunks[1]);
+            }
+        }
+    } else {
+        // Show process selection list
+        let processes = app.process_manager.get_processes();
+        let headers = ["PID", "NAME", "CPU%", "MEM(MB)", "USER"];
+        
+        let header_cells = headers
+            .iter()
+            .map(|h| Cell::from(*h).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+        
+        let header = Row::new(header_cells)
+            .style(Style::default().bg(Color::Blue))
+            .height(1);
+
+        let rows: Vec<Row> = processes
+            .iter()
+            .skip(app.per_process_graph_scroll_offset)
+            .take(PROCESS_TABLE_HEIGHT - 2)
+            .enumerate()
+            .map(|(i, process)| {
+                let idx = app.per_process_graph_scroll_offset + i;
+                let highlight = idx == app.selected_process_index;
+                let style = if highlight {
+                    Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else if i % 2 == 0 {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::Blue)
+                };
+
+                let memory_mb = process.memory_usage / (1024 * 1024);
+
+                Row::new(vec![
+                    Cell::from(process.pid.to_string()).style(style),
+                    Cell::from(process.name.clone()).style(Style::default().fg(Color::Green)),
+                    Cell::from(format!("{:.1}%", process.cpu_usage)).style(style),
+                    Cell::from(format!("{}", memory_mb)).style(style),
+                    Cell::from(process.user.clone().unwrap_or_default()).style(Style::default().fg(Color::Magenta)),
+                ])
+            })
+            .collect();
+
+        let table = Table::new(rows)
+            .header(header)
+            .block(Block::default().borders(Borders::ALL).title("Select a Process (↑↓ to move, Enter to select, Esc to return)"))
+            .widths(&[
+                Constraint::Length(8),   // PID
+                Constraint::Length(20),  // NAME
+                Constraint::Length(8),   // CPU%
+                Constraint::Length(10),  // MEM(MB)
+                Constraint::Length(12),  // USER
+            ]);
+
+        frame.render_widget(table, chunks[1]);
+    }
 }
 
 fn render_process_log_tab(frame: &mut ratatui::Frame, area: Rect) {

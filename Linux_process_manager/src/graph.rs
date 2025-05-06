@@ -47,6 +47,7 @@ pub struct GraphData {
     last_update: Instant,
     update_interval: Duration,
     cpu_infos: Vec<CpuInfo>,  // Keep this for per-core display
+    per_process_history: std::collections::HashMap<u32, (VecDeque<f32>, VecDeque<u64>)>,
 }
 
 impl GraphData {
@@ -58,6 +59,7 @@ impl GraphData {
             last_update: Instant::now(),
             update_interval: Duration::from_millis(update_interval_ms),
             cpu_infos: (0..get_cpu_count()).map(|_| CpuInfo::new()).collect(),
+            per_process_history: std::collections::HashMap::new(),
         }
     }
 
@@ -120,6 +122,30 @@ impl GraphData {
         
         self.memory_history.push_back(total_memory);
         
+        // Update per-process history
+        for process in process_manager.get_processes() {
+            let entry = self.per_process_history.entry(process.pid).or_insert_with(|| {
+                (VecDeque::with_capacity(self.max_points), VecDeque::with_capacity(self.max_points))
+            });
+            
+            entry.0.push_back(process.cpu_usage);
+            entry.1.push_back(process.memory_usage);
+            
+            if entry.0.len() > self.max_points {
+                entry.0.pop_front();
+            }
+            if entry.1.len() > self.max_points {
+                entry.1.pop_front();
+            }
+        }
+        
+        // Clean up history for processes that no longer exist
+        let current_pids: std::collections::HashSet<u32> = process_manager.get_processes()
+            .iter()
+            .map(|p| p.pid)
+            .collect();
+        self.per_process_history.retain(|&pid, _| current_pids.contains(&pid));
+        
         if self.cpu_history.len() > self.max_points {
             self.cpu_history.pop_front();
         }
@@ -141,6 +167,10 @@ impl GraphData {
 
     pub fn get_memory_history(&self) -> &VecDeque<u64> {
         &self.memory_history
+    }
+
+    pub fn get_process_history(&self, pid: u32) -> Option<(&VecDeque<f32>, &VecDeque<u64>)> {
+        self.per_process_history.get(&pid).map(|(cpu, mem)| (cpu, mem))
     }
 }
 
@@ -625,7 +655,7 @@ pub fn render_processes_tab(frame: &mut ratatui::Frame, area: Rect, graph_data: 
     frame.render_widget(widget, area);
 }
 
-pub fn render_advanced_tab(frame: &mut ratatui::Frame, area: Rect, graph_data: &GraphData) {
+pub fn render_advanced_tab(frame: &mut ratatui::Frame, area: Rect, _graph_data: &GraphData) {
     let (pgfault, pswpin, pswpout, iowait) = get_vm_stats();
     let (ctxt, processes, procs_running, procs_blocked, interrupts) = get_cpu_stats();
     // Advanced: CPU temperature and per-core frequency

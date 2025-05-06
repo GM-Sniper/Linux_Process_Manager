@@ -255,12 +255,12 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
                     } else if !app.log_filter_input.is_empty() {
                         format!("Filter: {} | {}", app.log_filter_input, group_status)
                     } else {
-                        format!("{} | Press / to search/filter, ↑/↓/PgUp/PgDn to scroll, g: group, u: ungroup, Esc/q: back", group_status)
+                        format!("{}\nPress / to search/filter, ↑/↓/PgUp/PgDn to scroll, g: group, u: ungroup, Esc/q: back", group_status)
                     };
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Length(3), // Make filter box taller
+                            Constraint::Length(5), // Increase height to accommodate two lines
                             Constraint::Min(0),
                         ])
                         .split(size);

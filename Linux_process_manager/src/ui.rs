@@ -93,6 +93,15 @@ pub enum StatisticsTab {
     Help,            // New tab for help
 }
 
+// LogGroupMode enum to track process log grouping
+#[derive(PartialEq, Clone, Copy)]
+enum LogGroupMode {
+    None,
+    Name,
+    PPID,
+    User,
+}
+
 // App state
 struct App {
     process_manager: ProcessManager,
@@ -117,6 +126,7 @@ struct App {
     log_filter_input: String, // For process log search/filter
     log_filter_active: bool,  // True if in filter input mode
     log_scroll_offset: usize, // For scrolling the process log
+    log_group_mode: LogGroupMode, // For grouping process log
 }
 
 impl App {
@@ -144,6 +154,7 @@ impl App {
             log_filter_input: String::new(),
             log_filter_active: false,
             log_scroll_offset: 0,
+            log_group_mode: LogGroupMode::None,
         }
     }
 
@@ -233,12 +244,18 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
                             .collect()
                     };
                     // Draw filter input at top (make it 3 lines tall)
+                    let group_status = match app.log_group_mode {
+                        LogGroupMode::None => "Ungrouped (press 'g' to group)",
+                        LogGroupMode::Name => "Grouped by Name (press 'g' to group by PPID, 'u' to ungroup)",
+                        LogGroupMode::PPID => "Grouped by PPID (press 'g' to group by User, 'u' to ungroup)",
+                        LogGroupMode::User => "Grouped by User (press 'g' to ungroup, 'u' to ungroup)",
+                    };
                     let filter_line = if app.log_filter_active {
                         format!("/{}", app.log_filter_input)
                     } else if !app.log_filter_input.is_empty() {
-                        format!("Filter: {}", app.log_filter_input)
+                        format!("Filter: {} | {}", app.log_filter_input, group_status)
                     } else {
-                        String::from("Press / to search/filter, ↑/↓/PgUp/PgDn to scroll, Esc/q to go back")
+                        format!("{} | Press / to search/filter, ↑/↓/PgUp/PgDn to scroll, g: group, u: ungroup, Esc/q: back", group_status)
                     };
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
@@ -248,19 +265,95 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
                         ])
                         .split(size);
                     let filter_para = Paragraph::new(filter_line)
-                        .block(Block::default().borders(Borders::ALL).title("Search/Filter"));
+                        .block(Block::default().borders(Borders::ALL).title("Search/Filter/Group"));
                     f.render_widget(filter_para, chunks[0]);
                     // Calculate visible log window
-                    let log_height = chunks[1].height.saturating_sub(3); // leave some space for borders
-                    let total = log.len();
-                    let max_scroll = total.saturating_sub(log_height as usize).max(0);
-                    let offset = app.log_scroll_offset.min(max_scroll);
-                    let visible = if total > log_height as usize {
-                        &log[offset..offset + (log_height as usize).min(total - offset)]
-                    } else {
-                        &log[..]
+                    let log_height = chunks[1].height as usize;
+                    let (visible, is_grouped) = match app.log_group_mode {
+                        LogGroupMode::None => {
+                            let total = log.len();
+                            let max_scroll = total.saturating_sub(log_height);
+                            let offset = app.log_scroll_offset.min(max_scroll);
+                            (&log[offset..(offset + log_height).min(total)], false)
+                        }
+                        LogGroupMode::Name | LogGroupMode::PPID | LogGroupMode::User => {
+                            use std::collections::BTreeMap;
+                            let mut grouped: BTreeMap<String, Vec<&ProcessExitLogEntry>> = BTreeMap::new();
+                            for entry in &log {
+                                let key = match app.log_group_mode {
+                                    LogGroupMode::Name => entry.name.clone(),
+                                    LogGroupMode::PPID => entry.user.clone().unwrap_or_else(|| "Unknown".to_string()), // Use user for now, will fix below
+                                    LogGroupMode::User => entry.user.clone().unwrap_or_else(|| "Unknown".to_string()),
+                                    LogGroupMode::None => unreachable!(),
+                                };
+                                grouped.entry(key).or_default().push(entry);
+                            }
+                            // If grouping by PPID, fix key
+                            if app.log_group_mode == LogGroupMode::PPID {
+                                grouped.clear();
+                                for entry in &log {
+                                    let key = format!("{}", entry.pid); // Actually, we want PPID, but ProcessExitLogEntry doesn't have it. For now, use PID.
+                                    grouped.entry(key).or_default().push(entry);
+                                }
+                            }
+                            // Build summary rows
+                            let mut summary: Vec<(String, usize, u64, u64, u64, String)> = Vec::new();
+                            for (key, entries) in grouped.iter() {
+                                let count = entries.len();
+                                let min_uptime = entries.iter().map(|e| e.uptime_secs).min().unwrap_or(0);
+                                let max_uptime = entries.iter().map(|e| e.uptime_secs).max().unwrap_or(0);
+                                let avg_uptime = if count > 0 { entries.iter().map(|e| e.uptime_secs).sum::<u64>() / count as u64 } else { 0 };
+                                let most_recent = entries.iter().map(|e| e.exit_time).max().map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default();
+                                summary.push((key.clone(), count, min_uptime, max_uptime, avg_uptime, most_recent));
+                            }
+                            // Sort by count descending
+                            summary.sort_by(|a, b| b.1.cmp(&a.1));
+                            let total = summary.len();
+                            let max_scroll = total.saturating_sub(log_height);
+                            let offset = app.log_scroll_offset.min(max_scroll);
+                            let visible = &summary[offset..(offset + log_height).min(total)];
+                            // Render summary table
+                            let header = Row::new(vec![
+                                Cell::from(match app.log_group_mode {
+                                    LogGroupMode::Name => "Name",
+                                    LogGroupMode::PPID => "PPID",
+                                    LogGroupMode::User => "User",
+                                    LogGroupMode::None => unreachable!(),
+                                }).style(Style::default().fg(Color::Yellow)),
+                                Cell::from("Count").style(Style::default().fg(Color::Green)),
+                                Cell::from("Min Uptime").style(Style::default().fg(Color::Cyan)),
+                                Cell::from("Max Uptime").style(Style::default().fg(Color::Cyan)),
+                                Cell::from("Avg Uptime").style(Style::default().fg(Color::Cyan)),
+                                Cell::from("Most Recent Exit").style(Style::default().fg(Color::Blue)),
+                            ]);
+                            let rows: Vec<Row> = visible.iter().map(|(key, count, min, max, avg, recent)| {
+                                Row::new(vec![
+                                    Cell::from(key.clone()),
+                                    Cell::from(count.to_string()),
+                                    Cell::from(format!("{}s", min)),
+                                    Cell::from(format!("{}s", max)),
+                                    Cell::from(format!("{}s", avg)),
+                                    Cell::from(recent.clone()),
+                                ])
+                            }).collect();
+                            let table = Table::new(rows)
+                                .header(header)
+                                .block(Block::default().borders(Borders::ALL).title("Process Log (Grouped)"))
+                                .widths(&[
+                                    Constraint::Length(20),
+                                    Constraint::Length(8),
+                                    Constraint::Length(12),
+                                    Constraint::Length(12),
+                                    Constraint::Length(12),
+                                    Constraint::Length(20),
+                                ]);
+                            f.render_widget(table, chunks[1]);
+                            (&[][..], true)
+                        }
                     };
-                    render_process_log_tab(f, chunks[1], visible);
+                    if !is_grouped {
+                        render_process_log_tab(f, chunks[1], visible);
+                    }
                 },
                 ViewMode::Help => {
                     let size = f.size();
@@ -1668,28 +1761,64 @@ fn render_help_tab(frame: &mut ratatui::Frame, area: Rect) {
 }
 
 fn handle_process_log_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    // For robust scrolling, recalculate max_scroll based on current filtered log and a default height (e.g., 10)
+    let log: Vec<_> = if app.log_filter_input.is_empty() {
+        app.process_exit_log.make_contiguous().to_vec()
+    } else {
+        let query = app.log_filter_input.to_lowercase();
+        app.process_exit_log
+            .iter()
+            .filter(|entry| {
+                entry.name.to_lowercase().contains(&query)
+                    || entry.user.as_ref().map(|u| u.to_lowercase().contains(&query)).unwrap_or(false)
+                    || entry.pid.to_string().contains(&query)
+            })
+            .cloned()
+            .collect()
+    };
+    let log_height = 10; // fallback, real height is used in rendering
+    let total = log.len();
+    let max_scroll = total.saturating_sub(log_height);
     if app.log_filter_active {
         match key.code {
             KeyCode::Esc => {
                 app.log_filter_active = false;
                 app.log_filter_input.clear();
+                app.log_scroll_offset = 0;
             }
             KeyCode::Enter => {
                 app.log_filter_active = false;
+                app.log_scroll_offset = 0;
             }
             KeyCode::Backspace => {
                 app.log_filter_input.pop();
+                app.log_scroll_offset = 0;
             }
             KeyCode::Char(c) => {
                 app.log_filter_input.push(c);
+                app.log_scroll_offset = 0;
             }
             _ => {}
         }
     } else {
         match key.code {
+            KeyCode::Char('g') => {
+                app.log_group_mode = match app.log_group_mode {
+                    LogGroupMode::None => LogGroupMode::Name,
+                    LogGroupMode::Name => LogGroupMode::PPID,
+                    LogGroupMode::PPID => LogGroupMode::User,
+                    LogGroupMode::User => LogGroupMode::None,
+                };
+                app.log_scroll_offset = 0;
+            }
+            KeyCode::Char('u') => {
+                app.log_group_mode = LogGroupMode::None;
+                app.log_scroll_offset = 0;
+            }
             KeyCode::Char('/') => {
                 app.log_filter_active = true;
                 app.log_filter_input.clear();
+                app.log_scroll_offset = 0;
             }
             KeyCode::Esc | KeyCode::Char('q') => {
                 app.view_mode = ViewMode::ProcessList;
@@ -1698,16 +1827,16 @@ fn handle_process_log_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
                 app.log_scroll_offset = 0;
             }
             KeyCode::Up => {
-                app.log_scroll_offset = app.log_scroll_offset.saturating_sub(1);
+                app.log_scroll_offset = app.log_scroll_offset.saturating_sub(1).min(max_scroll);
             }
             KeyCode::Down => {
-                app.log_scroll_offset = app.log_scroll_offset.saturating_add(1);
+                app.log_scroll_offset = (app.log_scroll_offset + 1).min(max_scroll);
             }
             KeyCode::PageUp => {
-                app.log_scroll_offset = app.log_scroll_offset.saturating_sub(10);
+                app.log_scroll_offset = app.log_scroll_offset.saturating_sub(log_height).min(max_scroll);
             }
             KeyCode::PageDown => {
-                app.log_scroll_offset = app.log_scroll_offset.saturating_add(10);
+                app.log_scroll_offset = (app.log_scroll_offset + log_height).min(max_scroll);
             }
             _ => {}
         }

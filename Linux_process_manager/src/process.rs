@@ -238,6 +238,21 @@ impl ProcessManager {
         
         Ok(())
     }
+
+    pub fn terminate_process(&self, pid: u32) -> std::io::Result<()> {
+        use libc::{kill, pid_t, SIGTERM};
+        
+        let temp_pid: pid_t = pid as pid_t;
+        
+        // SAFETY: This is safe because we're passing valid arguments
+        let result = unsafe { kill(temp_pid, SIGTERM) };
+        
+        if result != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        
+        Ok(())
+    }
 }
 // Function to format the timestamp
 fn format_timestamp(timestamp: u64) -> String {

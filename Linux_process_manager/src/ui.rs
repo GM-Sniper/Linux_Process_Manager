@@ -807,7 +807,7 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
 
     // Input box for action
     let input_text = if app.kill_stop_input_state == KillStopInputState::EnteringAction {
-        "Enter action: [k] Kill, [s] Stop, [c] Continue, [Esc] Cancel".to_string()
+        "Enter action: [k] Kill, [s] Stop, [c] Continue, [t] Terminate, [Esc] Cancel".to_string()
     } else {
         "Press Enter to select action".to_string()
     };
@@ -823,7 +823,7 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
         )]),
         Line::from(vec![Span::raw("- Use ↑/↓ to move selection in the process list.")]),
         Line::from(vec![Span::raw("- Press Enter to select a process and input an action.")]),
-        Line::from(vec![Span::raw("- Type k/s/c for Kill/Stop/Continue, then Esc to cancel or return." )]),
+        Line::from(vec![Span::raw("- Type k/s/c/t for Kill/Stop/Continue/Terminate, then Esc to cancel or return." )]),
         Line::from(vec![Span::raw("- Press Esc to cancel and return.")]),
     ];
     if let Some((msg, is_error)) = &app.input_state.message {
@@ -1359,7 +1359,7 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
         }
         KillStopInputState::EnteringAction => {
             match key.code {
-                KeyCode::Char('k') | KeyCode::Char('s') | KeyCode::Char('c') => {
+                KeyCode::Char('k') | KeyCode::Char('s') | KeyCode::Char('c') | KeyCode::Char('t') => {
                     if let Some(process) = processes.get(app.selected_process_index) {
                         let action = match key.code {
                             KeyCode::Char('k') => {
@@ -1378,6 +1378,12 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                                 match app.process_manager.continue_process(process.pid) {
                                     Ok(_) => Some(("Successfully continued process".to_string(), false)),
                                     Err(e) => Some((format!("Error continuing process: {}", e), true)),
+                                }
+                            }
+                            KeyCode::Char('t') => {
+                                match app.process_manager.terminate_process(process.pid) {
+                                    Ok(_) => Some(("Successfully sent termination request to process".to_string(), false)),
+                                    Err(e) => Some((format!("Error sending termination request: {}", e), true)),
                                 }
                             }
                             _ => None,

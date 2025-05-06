@@ -970,7 +970,6 @@ fn get_boot_time() -> (String, String) { // Returns (boot_time, last_reboot)
     (boot_time, last_reboot)
 }
 
-// Ensure all helper/stat functions are defined and in scope for this file.
 fn get_cpu_count() -> usize {
     if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
         return cpuinfo.lines().filter(|line| line.starts_with("processor")).count();

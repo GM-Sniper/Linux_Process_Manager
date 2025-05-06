@@ -584,9 +584,8 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
     // Commands help
     let commands = vec![
         Span::styled("Commands: ", Style::default().fg(Color::White)),
-        Span::styled("[k] Kill  ", Style::default().fg(Color::Red)),
-        Span::styled("[s] Stop  ", Style::default().fg(Color::Yellow)),
-        Span::styled("[c] Continue  ", Style::default().fg(Color::Green)),
+        Span::styled("[1] Kill  ", Style::default().fg(Color::Red)),
+        Span::styled("[2] Stop  ", Style::default().fg(Color::Yellow)),
         Span::styled("[Esc] Back", Style::default().fg(Color::Blue)),
     ];
     let commands_text = Paragraph::new(Line::from(commands))
@@ -1123,10 +1122,10 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                 if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
                     if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
                         app.input_state.message = Some((
-                            format!("PID {} selected. Press [k] to kill, [s] to stop, or [c] to continue", pid),
+                            format!("PID {} selected. Press [1] to kill or [2] to stop", pid),
                             false
                         ));
-                    } else {
+            } else {
                         app.input_state.message = Some((
                             format!("Error: Process with PID {} not found", pid),
                             true
@@ -1136,7 +1135,7 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                 }
             }
         }
-        KeyCode::Char('k') if !app.input_state.pid_input.is_empty() => {
+        KeyCode::Char('1') if !app.input_state.pid_input.is_empty() => {
             if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
                 if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
                     match app.process_manager.kill_process(pid) {
@@ -1155,7 +1154,7 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                             ));
                         }
                     }
-                } else {
+            } else {
                     app.input_state.message = Some((
                         format!("Error: Process with PID {} not found", pid),
                         true
@@ -1164,11 +1163,11 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                 }
             }
         }
-        KeyCode::Char('s') if !app.input_state.pid_input.is_empty() => {
+        KeyCode::Char('2') if !app.input_state.pid_input.is_empty() => {
             if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
                 if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
                     match app.process_manager.stop_process(pid) {
-                        Ok(_) => {
+                                Ok(_) => {
                             app.input_state.message = Some((
                                 format!("Successfully stopped process {}", pid),
                                 false
@@ -1176,37 +1175,9 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                             app.input_state.message_timeout = Some(std::time::Instant::now() + Duration::from_secs(1));
                             app.input_state.pid_input.clear();
                         }
-                        Err(e) => {
+                                Err(e) => {
                             app.input_state.message = Some((
                                 format!("Error stopping process: {}", e),
-                                true
-                            ));
-                        }
-                    }
-                } else {
-                    app.input_state.message = Some((
-                        format!("Error: Process with PID {} not found", pid),
-                        true
-                    ));
-                    app.input_state.pid_input.clear();
-                }
-            }
-        }
-        KeyCode::Char('c') if !app.input_state.pid_input.is_empty() => {
-            if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
-                if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
-                    match app.process_manager.continue_process(pid) {
-                        Ok(_) => {
-                            app.input_state.message = Some((
-                                format!("Successfully continued process {}", pid),
-                                false
-                            ));
-                            app.input_state.message_timeout = Some(std::time::Instant::now() + Duration::from_secs(1));
-                            app.input_state.pid_input.clear();
-                        }
-                        Err(e) => {
-                            app.input_state.message = Some((
-                                format!("Error continuing process: {}", e),
                                 true
                             ));
                         }

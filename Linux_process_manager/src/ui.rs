@@ -846,6 +846,12 @@ fn handle_events(app: &mut App) -> Result<bool, Box<dyn Error>> {
 
 fn handle_process_list_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
     match key.code {
+        KeyCode::Char('a') => {
+            app.sort_ascending = !app.sort_ascending;
+            if let Some(mode) = &app.sort_mode {
+                app.process_manager.set_sort(mode, app.sort_ascending);
+            }
+        }        
         KeyCode::Char('q') => return Ok(true),
         KeyCode::Char('s') | KeyCode::Char('S') => app.view_mode = ViewMode::Statistics,
         KeyCode::Up => {

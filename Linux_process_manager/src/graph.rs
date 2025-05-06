@@ -1167,7 +1167,7 @@ fn get_usage_style(usage: f64) -> ratatui::style::Style {
 fn get_disk_rw_speed() -> (f64, f64) {
     #[cfg(target_os = "linux")]
     {
-        use std::sync::Mutex;
+        // use std::sync::Mutex; delete after debugging
         use std::time::Instant;
         static mut LAST_READ: Option<(u64, u64, Instant)> = None;
         let mut read_bytes = 0u64;

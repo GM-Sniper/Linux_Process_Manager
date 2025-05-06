@@ -1,4 +1,5 @@
 use crate::process;
+use crate::scripting_rules::RuleEngine;
 use crate::graph;
 use std::io::stdout;
 use std::thread::sleep;
@@ -15,7 +16,7 @@ use ratatui::{
     prelude::*,
     widgets::{
         Block, Borders, List, ListItem, Paragraph, Table, Row, Cell,
-        Dataset, GraphType, Chart,
+        Dataset, GraphType, Chart, BorderType,
     },
     layout::{Layout, Constraint, Direction, Alignment},
     style::{Style, Modifier, Color},
@@ -42,6 +43,7 @@ enum ViewMode {
     PerProcessGraph, // Added for new feature
     ProcessLog,      // Added for new feature
     Help,            // Added for new feature
+    RuleInput,
 }
 
 // Input state for various operations
@@ -49,6 +51,7 @@ struct InputState {
     pid_input: String,
     nice_input: String,
     filter_input: String,
+    rule_input: String,
     message: Option<(String, bool)>, // (message, is_error)
     message_timeout: Option<std::time::Instant>,
 }
@@ -59,6 +62,7 @@ impl Default for InputState {
             pid_input: String::new(),
             nice_input: String::new(),
             filter_input: String::new(),
+            rule_input: String::new(),
             message: None,
             message_timeout: None,
         }
@@ -127,6 +131,7 @@ struct App {
     log_filter_active: bool,  // True if in filter input mode
     log_scroll_offset: usize, // For scrolling the process log
     log_group_mode: LogGroupMode, // For grouping process log
+    pub rule_engine: RuleEngine, //for scripting
 }
 
 impl App {
@@ -134,6 +139,7 @@ impl App {
         Self {
             process_manager: ProcessManager::new(),
             graph_data: graph::GraphData::new(60, 500),
+            rule_engine: RuleEngine::new(),
             view_mode: ViewMode::ProcessList,
             scroll_offset: 0,
             display_limit: 20,
@@ -212,7 +218,7 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
 
         terminal.draw(|f| {
             match app.view_mode {
-                ViewMode::ProcessList => draw_process_list(f, &app),
+                ViewMode::ProcessList => draw_process_list(f, &mut app),
                 ViewMode::Statistics => graph::render_graph_dashboard(
                     f,
                     &app.graph_data,
@@ -226,6 +232,7 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
                 ViewMode::KillStop => draw_kill_stop_menu(f, &app),
                 ViewMode::ChangeNice => draw_change_nice_menu(f, &app),
                 ViewMode::PerProcessGraph => render_per_process_graph_tab(f, f.size(), &app),
+                ViewMode::RuleInput => draw_rule_input(f, &app), //for scripting                
                 ViewMode::ProcessLog => {
                     let size = f.size();
                     // Filter log if needed
@@ -381,7 +388,7 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
 
 const PROCESS_TABLE_HEIGHT: usize = 12;
 
-fn draw_process_list(f: &mut Frame, app: &App) {
+fn draw_process_list(f: &mut Frame, app: &mut App) {
     let size = f.size();
     
     let chunks = Layout::default()
@@ -432,7 +439,15 @@ fn draw_process_list(f: &mut Frame, app: &App) {
         .height(1);
 
     // Process rows
-    let processes = app.process_manager.get_processes();
+    // let processes = app.process_manager.get_processes();
+    let processes = if app.rule_engine.active_rule.is_some() {
+        app.process_manager.apply_rules(&mut app.rule_engine);
+        app.process_manager.get_filtered_processes()
+    } else {
+        app.process_manager.get_processes()
+    };
+    
+    
     let rows: Vec<Row> = processes
         .iter()
         .skip(app.scroll_offset)
@@ -536,6 +551,7 @@ fn draw_filter_sort_menu(f: &mut Frame) {
     let items = vec![
         ListItem::new(Span::styled("[1] Sort", Style::default().fg(Color::Yellow))),
         ListItem::new(Span::styled("[2] Filter", Style::default().fg(Color::Green))),
+        ListItem::new(Span::styled("[X] Script Filtering", Style::default().fg(Color::Magenta))),
         ListItem::new(Span::styled("[←] Back", Style::default().fg(Color::Blue))),
     ];
 
@@ -994,6 +1010,28 @@ fn draw_change_nice_menu(f: &mut Frame, app: &App) {
     f.render_widget(info_box, right_chunks[2]);
 }
 
+//scripting ui
+
+fn draw_rule_input(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(4)
+        .constraints([Constraint::Min(3)].as_ref())
+        .split(f.size());
+
+    let input = Paragraph::new(app.input_state.rule_input.as_str())
+        .block(
+            Block::default()
+                .title("Enter Rule (e.g., cpu > 5.0 && mem < 1000)")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .style(Style::default().fg(Color::White)),
+        )
+        .style(Style::default().fg(Color::Yellow));
+
+    f.render_widget(input, chunks[0]);
+}
+
 fn get_status_style(status: &str) -> Style {
     match status.trim().to_lowercase().as_str() {
         "running" => Style::default().fg(Color::Green),
@@ -1051,6 +1089,11 @@ fn handle_events(app: &mut App) -> Result<bool, Box<dyn Error>> {
                 ViewMode::PerProcessGraph => {
                     if handle_per_process_graph_input(key, app)? {
                         return Ok(true);
+                    }
+                }
+                ViewMode::RuleInput => {
+                    if handle_script_input(key, app)? {
+                    return Ok(true);
                     }
                 }
                 ViewMode::ProcessLog => {
@@ -1193,6 +1236,11 @@ fn handle_filter_sort_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
     match key.code {
         KeyCode::Char('1') => app.view_mode = ViewMode::Sort,
         KeyCode::Char('2') => app.view_mode = ViewMode::Filter,
+        KeyCode::Char('x') => {
+            app.input_state.rule_input.clear();
+            app.view_mode = ViewMode::RuleInput;
+        }
+        
         KeyCode::Backspace | KeyCode::Esc => app.view_mode = ViewMode::ProcessList,
         _ => {}
     }
@@ -1581,6 +1629,29 @@ fn handle_per_process_graph_input(key: KeyEvent, app: &mut App) -> Result<bool, 
         _ => Ok(false),
     }
 }
+
+fn handle_script_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    match key.code {
+        KeyCode::Esc => {
+            app.view_mode = ViewMode::ProcessList;
+        }
+        KeyCode::Enter => {
+            let rule = app.input_state.rule_input.trim().to_string();
+            app.rule_engine.set_rule(rule);
+            app.process_manager.apply_rules(&mut app.rule_engine);
+            app.view_mode = ViewMode::ProcessList;
+        }
+        KeyCode::Char(c) => {
+            app.input_state.rule_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.input_state.rule_input.pop();
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 
 fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let chunks = Layout::default()

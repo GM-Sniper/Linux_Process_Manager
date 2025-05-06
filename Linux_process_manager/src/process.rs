@@ -1,3 +1,4 @@
+use crate::scripting_rules::RuleEngine;
 use sysinfo::{ProcessExt, System, SystemExt, PidExt, UserExt};
 use procfs::process::Process as ProcfsProcess; // Import procfs for nice value
 use std::convert::TryInto; // Import the try_into function
@@ -19,6 +20,7 @@ pub struct ProcessInfo {
 
 pub struct ProcessManager {
     system: System,
+    filtered_processes: Vec<ProcessInfo>,// for the scripting
     processes: Vec<ProcessInfo>,
     sort_mode: Option<String>,
     sort_ascending: bool,
@@ -33,6 +35,7 @@ impl ProcessManager {
         ProcessManager { 
             system,
             processes: Vec::new(),
+            filtered_processes: Vec::new(),
             sort_mode: None,
             sort_ascending: true,
             filter_mode: None,
@@ -109,6 +112,10 @@ impl ProcessManager {
 
     pub fn get_processes(&self) -> &Vec<ProcessInfo> {
         &self.processes
+    }
+
+    pub fn get_filtered_processes(&self) -> &Vec<ProcessInfo> {
+        &self.filtered_processes
     }
 
     pub fn set_sort(&mut self, mode: &str, ascending: bool) {
@@ -253,6 +260,17 @@ impl ProcessManager {
         
         Ok(())
     }
+    
+    pub fn apply_rules(&mut self, rule_engine: &mut RuleEngine) {
+        self.filtered_processes = self.processes
+            .iter()
+            .cloned()
+            .filter(|p| rule_engine.evaluate_for(p))
+            .collect();
+    }
+    
+    
+    
 }
 // Function to format the timestamp
 fn format_timestamp(timestamp: u64) -> String {

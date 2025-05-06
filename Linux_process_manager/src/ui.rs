@@ -598,39 +598,56 @@ fn draw_filter_input_menu(f: &mut Frame, app: &App) {
 
 fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
     let size = f.size();
-    
-    let chunks = Layout::default()
+    // Add a visually prominent title box at the top
+    let title_chunk = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),    // Title
-            Constraint::Min(size.height.saturating_sub(8)), // Process list
-            Constraint::Length(5),    // Input and feedback area
+            Constraint::Length(3), // Make the title box taller
+            Constraint::Min(1),
+        ])
+        .split(size);
+    let title = Paragraph::new("Process Control Menu")
+        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).border_type(ratatui::widgets::BorderType::Thick));
+    f.render_widget(title, title_chunk[0]);
+    let size = title_chunk[1];
+    // Add a blank line below the title for spacing
+    let spacing_chunk = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(size);
+    let size = spacing_chunk[1];
+
+    let process_table_width = (size.width as f32 * 0.55) as u16;
+    let right_panel_width = size.width - process_table_width;
+    let process_table_height = size.height - 2;
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(process_table_width),
+            Constraint::Length(right_panel_width),
         ])
         .split(size);
 
-    // Title
-    let title = Paragraph::new("Process Control Menu")
-        .style(Style::default().fg(Color::Red))
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(title, chunks[0]);
-
-    // Process list
+    // --- LEFT: Process Table with highlight ---
     let processes = app.process_manager.get_processes();
     let headers = ["PID", "NAME", "STATUS", "CPU%", "MEM(MB)", "USER"];
-    
     let header_cells = headers
         .iter()
         .map(|h| Cell::from(*h).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
-    
     let header = Row::new(header_cells)
         .style(Style::default().bg(Color::Blue))
         .height(1);
 
-    let rows: Vec<Row> = processes
+    let visible_processes = processes
         .iter()
         .skip(app.scroll_offset)
-        .take(app.display_limit)
+        .take(process_table_height as usize - 2)
         .enumerate()
         .map(|(i, process)| {
             let idx = app.scroll_offset + i;
@@ -642,9 +659,7 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
             } else {
                 Style::default().fg(Color::Blue)
             };
-
             let memory_mb = process.memory_usage / (1024 * 1024);
-
             Row::new(vec![
                 Cell::from(process.pid.to_string()).style(style),
                 Cell::from(process.name.clone()).style(Style::default().fg(Color::Green)),
@@ -654,9 +669,9 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
                 Cell::from(process.user.clone().unwrap_or_default()).style(Style::default().fg(Color::Magenta)),
             ])
         })
-        .collect();
+        .collect::<Vec<_>>();
 
-    let process_table = Table::new(rows)
+    let process_table = Table::new(visible_processes)
         .header(header)
         .block(Block::default().borders(Borders::ALL).title("Processes (↑↓ to move, Enter to select)"))
         .widths(&[
@@ -667,83 +682,66 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
             Constraint::Length(10),  // MEM(MB)
             Constraint::Length(12),  // USER
         ]);
-    f.render_widget(process_table, chunks[1]);
+    f.render_widget(process_table, chunks[0]);
 
-    // Input and feedback area
-    let input_area = Layout::default()
+    // --- RIGHT: Details, Input, Instructions, Status ---
+    let right_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),  // Commands
-            Constraint::Length(3),  // Input and feedback
+            Constraint::Length(5), // Process details
+            Constraint::Length(5), // Input box
+            Constraint::Min(3),    // Instructions & status
         ])
-        .split(chunks[2]);
+        .split(chunks[1]);
 
-    // Commands help
-    let commands = match app.kill_stop_input_state {
-        KillStopInputState::SelectingPid => vec![
-            Span::styled("Commands: ", Style::default().fg(Color::White)),
-            Span::styled("[↑/↓] Move  ", Style::default().fg(Color::Cyan)),
-            Span::styled("[Enter] Select  ", Style::default().fg(Color::Green)),
-            Span::styled("[Esc] Back", Style::default().fg(Color::Blue)),
-        ],
-        KillStopInputState::EnteringAction => vec![
-            Span::styled("Commands: ", Style::default().fg(Color::White)),
-            Span::styled("[k] Kill  ", Style::default().fg(Color::Red)),
-            Span::styled("[s] Stop  ", Style::default().fg(Color::Yellow)),
-            Span::styled("[c] Continue  ", Style::default().fg(Color::Green)),
-            Span::styled("[Esc] Back", Style::default().fg(Color::Blue)),
-        ],
-    };
-    let commands_text = Paragraph::new(Line::from(commands))
-        .block(Block::default().borders(Borders::ALL))
-        .alignment(Alignment::Left);
-    f.render_widget(commands_text, input_area[0]);
-
-    // Input and feedback
-    let content = if let Some((msg, is_error)) = &app.input_state.message {
-        // Show feedback message
+    // Process details
+    let selected = app.selected_process_index.min(processes.len().saturating_sub(1));
+    let proc = processes.get(selected);
+    let details = if let Some(proc) = proc {
         vec![
-            Line::from(vec![
-                Span::styled(
-                    msg,
-                    if *is_error {
-                        Style::default().fg(Color::Red)
-                    } else {
-                        Style::default().fg(Color::Green)
-                    }
-                )
-            ])
+            Line::from(vec![Span::styled("Selected Process:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
+            Line::from(vec![Span::raw(format!("PID: {}", proc.pid))]),
+            Line::from(vec![Span::raw(format!("Name: {}", proc.name))]),
+            Line::from(vec![Span::raw(format!("User: {}", proc.user.clone().unwrap_or_default()))]),
+            Line::from(vec![Span::raw(format!("Status: {}", proc.status))]),
         ]
-    } else if app.kill_stop_input_state == KillStopInputState::EnteringAction {
-        // Show action input prompt
-        if let Some(process) = processes.get(app.selected_process_index) {
-            vec![
-                Line::from(vec![
-                    Span::styled(format!("Selected process {} (PID: {}). Enter action (k/s/c): ", process.name, process.pid), Style::default().fg(Color::Yellow)),
-                    Span::styled(&app.input_state.pid_input, Style::default().fg(Color::White)),
-                    Span::styled(" █", Style::default().fg(Color::White)),
-                ])
-            ]
-        } else {
-            vec![Line::from("No process selected.")]
-        }
     } else {
-        // Show process selection prompt
-        if let Some(process) = processes.get(app.selected_process_index) {
-            vec![
-                Line::from(vec![
-                    Span::styled(format!("Selected process {} (PID: {}). Press Enter to select action.", process.name, process.pid), Style::default().fg(Color::Yellow)),
-                ])
-            ]
-        } else {
-            vec![Line::from("No process selected.")]
-        }
+        vec![Line::from("No process selected.")]
     };
+    let details_box = Paragraph::new(details)
+        .block(Block::default().borders(Borders::ALL).title("Details"));
+    f.render_widget(details_box, right_chunks[0]);
 
-    let input_widget = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title("Input/Feedback"))
-        .alignment(Alignment::Left);
-    f.render_widget(input_widget, input_area[1]);
+    // Input box for action
+    let input_text = if app.kill_stop_input_state == KillStopInputState::EnteringAction {
+        "Enter action: [k] Kill, [s] Stop, [c] Continue, [Esc] Cancel".to_string()
+    } else {
+        "Press Enter to select action".to_string()
+    };
+    let input_box = Paragraph::new(input_text)
+        .style(Style::default().fg(Color::Yellow))
+        .block(Block::default().borders(Borders::ALL).title("Action Input"));
+    f.render_widget(input_box, right_chunks[1]);
+
+    // Instructions and status
+    let mut info = vec![
+        Line::from(vec![Span::styled(
+            "Instructions:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        )]),
+        Line::from(vec![Span::raw("- Use ↑/↓ to move selection in the process list.")]),
+        Line::from(vec![Span::raw("- Press Enter to select a process and input an action.")]),
+        Line::from(vec![Span::raw("- Type k/s/c for Kill/Stop/Continue, then Esc to cancel or return." )]),
+        Line::from(vec![Span::raw("- Press Esc to cancel and return.")]),
+    ];
+    if let Some((msg, is_error)) = &app.input_state.message {
+        info.push(Line::from(vec![Span::styled(
+            msg,
+            if *is_error { Style::default().fg(Color::Red) } else { Style::default().fg(Color::Green) }
+        )]));
+    }
+    let info_box = Paragraph::new(info)
+        .block(Block::default().borders(Borders::ALL).title("Help & Status"));
+    f.render_widget(info_box, right_chunks[2]);
 }
 
 fn draw_change_nice_menu(f: &mut Frame, app: &App) {

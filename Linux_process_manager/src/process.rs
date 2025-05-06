@@ -11,11 +11,10 @@ pub struct ProcessInfo {
     pub cpu_usage: f32,
     pub memory_usage: u64,
     pub parent_pid: Option<u32>,
-    pub start_time: u64,
     pub status: String,
     pub user: Option<String>,
     pub nice: i32, 
-    pub startTime: String,
+    pub start_time_str: String,
 }
 
 pub struct ProcessManager {
@@ -75,13 +74,12 @@ impl ProcessManager {
                 cpu_usage: process.cpu_usage(),
                 memory_usage: process.memory(),
                 parent_pid: process.parent().map(|p| p.as_u32()),
-                start_time: process.start_time(),
                 status: process.status().to_string(),
                 user: process.user_id()
                     .and_then(|id| self.system.get_user_by_id(id)
                     .map(|user| user.name().to_string())),
                 nice: nice_value as i32,
-                startTime: formatted_time,
+                start_time_str: formatted_time,
             };
 
             // Apply filter if set
@@ -111,10 +109,6 @@ impl ProcessManager {
 
     pub fn get_processes(&self) -> &Vec<ProcessInfo> {
         &self.processes
-    }
-
-    pub fn get_processes_mut(&mut self) -> &mut Vec<ProcessInfo> {
-        &mut self.processes
     }
 
     pub fn set_sort(&mut self, mode: &str, ascending: bool) {
@@ -148,9 +142,9 @@ impl ProcessManager {
             }
             "start" => {
                 if self.sort_ascending {
-                    self.processes.sort_by(|a, b| a.startTime.cmp(&b.startTime));
+                    self.processes.sort_by(|a, b| a.start_time_str.cmp(&b.start_time_str));
                 } else {
-                    self.processes.sort_by(|a, b| b.startTime.cmp(&a.startTime));
+                    self.processes.sort_by(|a, b| b.start_time_str.cmp(&a.start_time_str));
                 }
             }
             "nice" => {

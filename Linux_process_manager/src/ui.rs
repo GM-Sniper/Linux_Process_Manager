@@ -5,11 +5,9 @@ use std::thread::sleep;
 use std::time::Duration;
 use process::ProcessManager;
 use std::error::Error;
-use crate::graph::{GraphData, render_tabs, render_graphs_tab, render_overview_tab, render_cpu_tab, render_memory_tab, render_disk_tab, render_processes_tab, render_advanced_tab};
-
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent},
-    terminal::{self, disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{ disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     execute,
 };
 
@@ -48,7 +46,6 @@ struct InputState {
     filter_input: String,
     message: Option<(String, bool)>, // (message, is_error)
     message_timeout: Option<std::time::Instant>,
-    nice_history: Vec<String>,  // New field for tracking nice change steps
 }
 
 impl Default for InputState {
@@ -59,7 +56,6 @@ impl Default for InputState {
             filter_input: String::new(),
             message: None,
             message_timeout: None,
-            nice_history: Vec::new(),
         }
     }
 }
@@ -128,21 +124,6 @@ impl App {
         self.process_manager.refresh();
         self.graph_data.update(&self.process_manager);
     }
-}
-
-// Setup the terminal (raw mode + alternate screen)
-pub fn setup_terminal() -> std::io::Result<()> {
-    terminal::enable_raw_mode()?;
-    execute!(stdout(), terminal::EnterAlternateScreen)?;
-    Ok(())
-}
-
-
-// Restore terminal back to normal
-pub fn restore_terminal() -> std::io::Result<()> {
-    execute!(stdout(), terminal::LeaveAlternateScreen)?;
-    terminal::disable_raw_mode()?;
-    Ok(())
 }
 
 
@@ -291,7 +272,7 @@ fn draw_process_list(f: &mut Frame, app: &App) {
                 Cell::from(format!("{:.2}%", process.cpu_usage)).style(cpu_style),
                 Cell::from(format!("{}MB", memory_mb)).style(style),
                 Cell::from(process.parent_pid.unwrap_or(0).to_string()).style(style),
-                Cell::from(process.startTime.clone()).style(Style::default()),
+                Cell::from(process.start_time_str.clone()).style(Style::default()),
                 Cell::from(process.nice.to_string()).style(Style::default().fg(Color::Yellow)),
                 Cell::from(process.user.clone().unwrap_or_default()).style(Style::default().fg(Color::Magenta)),
                 Cell::from(process.status.trim()).style(get_status_style(&process.status)),
@@ -1073,7 +1054,7 @@ fn handle_filter_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Err
                         app.view_mode = ViewMode::ProcessList;
                     }
                 }
-                KeyCode::Backspace | KeyCode::Left => {
+                KeyCode::Left => {
                     app.view_mode = ViewMode::Filter;
                     app.input_state.filter_input.clear();
                 }
@@ -1291,45 +1272,35 @@ fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
     Ok(false)
 }
 
-fn render_graph_dashboard(
-    frame: &mut ratatui::Frame,
-    process_manager: &ProcessManager,
-    graph_data: &GraphData,
-    stats_scroll_offset: usize,
-    current_tab: &StatisticsTab,
-) {
-    let size = frame.size();
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(size.height.saturating_sub(3)),
-        ])
-        .split(size);
-    render_tabs(frame, main_chunks[0], current_tab);
-    match current_tab {
-        StatisticsTab::Graphs => render_graphs_tab(frame, main_chunks[1], process_manager, graph_data),
-        StatisticsTab::Overview => render_overview_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::CPU => render_cpu_tab(frame, main_chunks[1], process_manager, graph_data),
-        StatisticsTab::Memory => render_memory_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::PerProcessGraph => render_per_process_graph_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::ProcessLog => render_process_log_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::Disk => render_disk_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::Processes => render_processes_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::Advanced => render_advanced_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::Help => render_help_tab(frame, main_chunks[1]),
-    }
-}
+
 
 fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
-    // Will be implemented in per_process_graph.rs
+    let text = vec![
+        Line::from(vec![Span::styled("Per-Process Graph View", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![Span::styled("Select a process to view its resource usage graph", Style::default().fg(Color::Gray))]),
+    ];
+    let widget = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Per-Process Graph"));
+    frame.render_widget(widget, area);
 }
 
 fn render_process_log_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
-    // Will be implemented in process_log.rs
+    let text = vec![
+        Line::from(vec![Span::styled("Process Log View", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![Span::styled("View detailed logs for each process", Style::default().fg(Color::Gray))]),
+    ];
+    let widget = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Process Log"));
+    frame.render_widget(widget, area);
 }
 
 fn render_help_tab(frame: &mut ratatui::Frame, area: Rect) {
-    // Placeholder for help content
-    // Will display navigation and usage instructions
+    let text = vec![
+        Line::from(vec![Span::styled("Help & Documentation", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![Span::styled("Navigation:", Style::default().fg(Color::Cyan))]),
+        Line::from(vec![Span::styled("↑/↓ - Scroll through processes", Style::default().fg(Color::Gray))]),
+        Line::from(vec![Span::styled("1-6 - Switch between views", Style::default().fg(Color::Gray))]),
+        Line::from(vec![Span::styled("S - Show statistics", Style::default().fg(Color::Gray))]),
+        Line::from(vec![Span::styled("q - Quit", Style::default().fg(Color::Gray))]),
+    ];
+    let widget = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Help"));
+    frame.render_widget(widget, area);
 }

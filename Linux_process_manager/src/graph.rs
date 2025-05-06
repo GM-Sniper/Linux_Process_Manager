@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 
 // Import Ratatui components
 use ratatui::{
-    backend::Backend,
     widgets::{Block, Borders, Dataset, GraphType, Chart, Paragraph},
     layout::{Layout, Constraint, Direction, Alignment, Rect},
     text::{Span, Line},
@@ -148,10 +147,10 @@ impl GraphData {
 
 pub fn render_graph_dashboard(
     frame: &mut ratatui::Frame,
-    process_manager: &ProcessManager,
+    _process_manager: &ProcessManager,
     graph_data: &GraphData,
     stats_scroll_offset: usize,
-    current_tab: &StatisticsTab,  // Add current_tab parameter
+    current_tab: &StatisticsTab,
 ) {
     let size = frame.size();
     // Create main layout with tabs and content
@@ -166,13 +165,13 @@ pub fn render_graph_dashboard(
     render_tabs(frame, main_chunks[0], current_tab);
     // Render content based on current tab
     match current_tab {
-        StatisticsTab::Graphs => render_graphs_tab(frame, main_chunks[1], process_manager, graph_data),
-        StatisticsTab::Overview => render_overview_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::CPU => render_cpu_tab(frame, main_chunks[1], process_manager, graph_data),
-        StatisticsTab::Memory => render_memory_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::Disk => render_disk_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::Processes => render_processes_tab(frame, main_chunks[1], process_manager),
-        StatisticsTab::Advanced => render_advanced_tab(frame, main_chunks[1], process_manager),
+        StatisticsTab::Graphs => render_graphs_tab(frame, main_chunks[1], _process_manager, graph_data),
+        StatisticsTab::Overview => render_overview_tab(frame, main_chunks[1], _process_manager),
+        StatisticsTab::CPU => render_cpu_tab(frame, main_chunks[1], _process_manager, graph_data),
+        StatisticsTab::Memory => render_memory_tab(frame, main_chunks[1], _process_manager),
+        StatisticsTab::Disk => render_disk_tab(frame, main_chunks[1], _process_manager),
+        StatisticsTab::Processes => render_processes_tab(frame, main_chunks[1], _process_manager),
+        StatisticsTab::Advanced => render_advanced_tab(frame, main_chunks[1], _process_manager),
         StatisticsTab::PerProcessGraph | StatisticsTab::ProcessLog | StatisticsTab::Help => {
             // Placeholder: do nothing or show a message
         }
@@ -527,7 +526,7 @@ pub fn render_cpu_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &
     frame.render_widget(widget, area);
 }
 
-pub fn render_memory_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
+pub fn render_memory_tab(frame: &mut ratatui::Frame, area: Rect, _process_manager: &ProcessManager) {
     let (mem_total, mem_used, mem_free, mem_cached) = get_memory_info();
     let (swap_used, swap_total) = get_swap_info();
     // Read more details from /proc/meminfo
@@ -571,7 +570,7 @@ pub fn render_memory_tab(frame: &mut ratatui::Frame, area: Rect, process_manager
     frame.render_widget(widget, area);
 }
 
-pub fn render_disk_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
+pub fn render_disk_tab(frame: &mut ratatui::Frame, area: Rect, _process_manager: &ProcessManager) {
     let (disk_total, disk_used) = get_disk_stats();
     let disk_free = disk_total.saturating_sub(disk_used);
     // Try to get disk read/write speeds and storage type
@@ -640,7 +639,7 @@ pub fn render_processes_tab(frame: &mut ratatui::Frame, area: Rect, process_mana
     frame.render_widget(widget, area);
 }
 
-pub fn render_advanced_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
+pub fn render_advanced_tab(frame: &mut ratatui::Frame, area: Rect, _process_manager: &ProcessManager) {
     let (pgfault, pswpin, pswpout, iowait) = get_vm_stats();
     let (ctxt, processes, procs_running, procs_blocked, interrupts) = get_cpu_stats();
     // Advanced: CPU temperature and per-core frequency
@@ -779,110 +778,6 @@ fn render_memory_graph(
     frame.render_widget(chart, area);
 }
 
-// Render system statistics
-fn render_process_stats(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    process_manager: &ProcessManager,
-    stats_scroll_offset: usize,
-) {
-    let processes = process_manager.get_processes();
-    
-    // Get total CPU and memory
-    let total_cpu: f32 = processes.iter().map(|p| p.cpu_usage).sum();
-    let total_memory: u64 = processes.iter().map(|p| p.memory_usage).sum::<u64>() / (1024 * 1024);
-    let process_count = processes.len();
-    
-    // Sort processes by CPU usage for top processes list
-    let mut sorted_processes = processes.to_vec();
-    sorted_processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Create the full statistics text
-    let mut stats_text = vec![
-        Line::from(vec![Span::styled(
-            "SYSTEM STATISTICS",
-            Style::default().fg(RatatuiColor::White).add_modifier(Modifier::BOLD)
-        )]),
-        Line::from(vec![Span::styled(
-            format!("Tasks: {}", process_count),  // Changed from "Total processes" to "Tasks"
-            Style::default().fg(RatatuiColor::Green)
-        )]),
-        Line::from(vec![
-            Span::styled(
-                format!("Total CPU: {:.2}%", total_cpu),
-                Style::default().fg(if total_cpu > 75.0 {
-                    RatatuiColor::Red
-                } else if total_cpu > 50.0 {
-                    RatatuiColor::Yellow
-                } else {
-                    RatatuiColor::Green
-                })
-            )
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("Total Memory: {}MB", total_memory),
-                Style::default().fg(RatatuiColor::Blue)
-            )
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "TOP TASKS BY CPU",  // Changed from "TOP PROCESSES" to "TOP TASKS"
-                Style::default().fg(RatatuiColor::White).add_modifier(Modifier::BOLD)
-            )
-        ]),
-    ];
-
-    // Add top 10 processes by CPU usage
-    for (i, process) in sorted_processes.iter().take(10).enumerate() {
-        stats_text.push(Line::from(vec![Span::styled(
-            format!("{}. {} (PID: {}) - CPU: {:.2}% | MEM: {}MB",
-                i + 1,
-                process.name,
-                process.pid,
-                process.cpu_usage,
-                process.memory_usage / (1024 * 1024)
-            ),
-            Style::default().fg(RatatuiColor::Yellow)
-        )]));
-    }
-
-    // Sort by memory usage for memory section
-    sorted_processes.sort_by_key(|p| std::cmp::Reverse(p.memory_usage));
-
-    stats_text.push(Line::from(vec![Span::styled(
-        "\nTOP TASKS BY MEMORY",
-        Style::default().fg(RatatuiColor::White).add_modifier(Modifier::BOLD)
-    )]));
-
-    // Add top 10 processes by memory usage
-    for (i, process) in sorted_processes.iter().take(10).enumerate() {
-        stats_text.push(Line::from(vec![Span::styled(
-            format!("{}. {} (PID: {}) - MEM: {}MB | CPU: {:.2}% | Status: {}",
-                i + 1,
-                process.name,
-                process.pid,
-                process.memory_usage / (1024 * 1024),
-                process.cpu_usage,
-                process.status.trim()
-            ),
-            Style::default().fg(RatatuiColor::Blue)
-        )]));
-    }
-
-    // Calculate maximum scroll offset
-    let max_scroll = stats_text.len().saturating_sub(area.height as usize);
-    let scroll_offset = stats_scroll_offset.min(max_scroll);
-
-    // Create the scrollable stats widget
-    let stats_widget = Paragraph::new(stats_text)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .title(format!("Statistics (↑↓ to scroll) [{}/{}]", scroll_offset + 1, max_scroll + 1)))
-        .scroll((scroll_offset as u16, 0));
-
-    frame.render_widget(stats_widget, area);
-}
 
 // Add these helper functions at the top level
 fn get_process_state_counts(processes: &[ProcessInfo]) -> std::collections::HashMap<String, usize> {
@@ -1062,9 +957,10 @@ fn get_boot_time() -> (String, String) { // Returns (boot_time, last_reboot)
                     .as_secs() as f64;
                 let boot_timestamp = now - secs;
                 
-                // Format boot time
-                let datetime = chrono::NaiveDateTime::from_timestamp_opt(boot_timestamp as i64, 0)
-                    .unwrap_or_default();
+                // Format boot time using DateTime::from_timestamp
+                let datetime = chrono::DateTime::from_timestamp(boot_timestamp as i64, 0)
+                    .unwrap_or_default()
+                    .naive_local();
                 boot_time = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
                 
                 // Try to get last reboot from wtmp (if available)
@@ -1083,16 +979,6 @@ fn get_boot_time() -> (String, String) { // Returns (boot_time, last_reboot)
         }
     }
     (boot_time, last_reboot)
-}
-
-fn render_more_info_tab(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    process_manager: &ProcessManager,
-) {
-    // Implementation of render_more_info_tab function
-    // This function is not provided in the original file or the new code block
-    // It's assumed to exist as it's called in the render_graph_dashboard function
 }
 
 // Ensure all helper/stat functions are defined and in scope for this file.

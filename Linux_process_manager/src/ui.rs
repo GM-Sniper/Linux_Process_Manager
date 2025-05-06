@@ -23,6 +23,11 @@ use ratatui::{
     Frame,
 };
 
+use crate::process_log::{ProcessExitLogEntry, render_process_log_tab};
+use chrono::{Local};
+use chrono::TimeZone;
+use std::collections::{HashSet, VecDeque};
+
 // ViewMode enum to track current view
 #[derive(PartialEq)]
 enum ViewMode {
@@ -107,7 +112,15 @@ struct App {
     selected_process_index: usize,
     per_process_graph_scroll_offset: usize,  // Add this
     selected_process_for_graph: Option<u32>,  // Add this
+<<<<<<< Updated upstream
     kill_stop_input_state: KillStopInputState,  // Add this
+=======
+    process_exit_log: VecDeque<ProcessExitLogEntry>, // Add this
+    prev_pids: HashSet<u32>, // For tracking exited processes
+    log_filter_input: String, // For process log search/filter
+    log_filter_active: bool,  // True if in filter input mode
+    log_scroll_offset: usize, // For scrolling the process log
+>>>>>>> Stashed changes
 }
 
 impl App {
@@ -129,13 +142,52 @@ impl App {
             selected_process_index: 0,
             per_process_graph_scroll_offset: 0,  // Add this
             selected_process_for_graph: None,    // Add this
+<<<<<<< Updated upstream
             kill_stop_input_state: KillStopInputState::SelectingPid,  // Add this
+=======
+            process_exit_log: VecDeque::with_capacity(100), // Keep last 100 exits
+            prev_pids: HashSet::new(),
+            log_filter_input: String::new(),
+            log_filter_active: false,
+            log_scroll_offset: 0,
+>>>>>>> Stashed changes
         }
     }
 
     fn refresh(&mut self) {
+        let prev_map: std::collections::HashMap<u32, process::ProcessInfo> = self.process_manager.get_processes().iter().map(|p| (p.pid, p.clone())).collect();
+        let prev_pids = self.prev_pids.clone();
         self.process_manager.refresh();
         self.graph_data.update(&self.process_manager);
+        let current: Vec<_> = self.process_manager.get_processes().iter().map(|p| p.pid).collect();
+        let current_set: HashSet<u32> = current.iter().copied().collect();
+        // Find exited PIDs
+        for pid in prev_pids.difference(&current_set) {
+            if let Some(proc) = prev_map.get(pid) {
+                let exit_time = Local::now();
+                // Try to parse start_time_str as chrono::NaiveDateTime
+                let uptime_secs = chrono::NaiveDateTime::parse_from_str(&proc.start_time_str, "%Y-%m-%d %H:%M:%S")
+                    .ok()
+                    .and_then(|start| {
+                        let start = Local.from_local_datetime(&start).single()?;
+                        Some((exit_time - start).num_seconds().max(0) as u64)
+                    })
+                    .unwrap_or(0);
+                let entry = ProcessExitLogEntry {
+                    pid: proc.pid,
+                    name: proc.name.clone(),
+                    user: proc.user.clone(),
+                    start_time: proc.start_time_str.clone(),
+                    exit_time,
+                    uptime_secs,
+                };
+                if self.process_exit_log.len() >= 100 {
+                    self.process_exit_log.pop_front();
+                }
+                self.process_exit_log.push_back(entry);
+            }
+        }
+        self.prev_pids = current_set;
     }
 }
 
@@ -172,9 +224,46 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
                 ViewMode::PerProcessGraph => render_per_process_graph_tab(f, f.size(), &app),
                 ViewMode::ProcessLog => {
                     let size = f.size();
-                    let para = Paragraph::new("Process Log View (to be implemented)")
-                        .block(Block::default().borders(Borders::ALL).title("Process Log"));
-                    f.render_widget(para, size);
+                    // Filter log if needed
+                    let log: Vec<_> = if app.log_filter_input.is_empty() {
+                        app.process_exit_log.make_contiguous().to_vec()
+                    } else {
+                        let query = app.log_filter_input.to_lowercase();
+                        app.process_exit_log
+                            .iter()
+                            .filter(|entry| {
+                                entry.name.to_lowercase().contains(&query)
+                                    || entry.user.as_ref().map(|u| u.to_lowercase().contains(&query)).unwrap_or(false)
+                                    || entry.pid.to_string().contains(&query)
+                            })
+                            .cloned()
+                            .collect()
+                    };
+                    // Draw filter input at top (make it 3 lines tall)
+                    let filter_line = if app.log_filter_active {
+                        format!("/{}", app.log_filter_input)
+                    } else if !app.log_filter_input.is_empty() {
+                        format!("Filter: {}", app.log_filter_input)
+                    } else {
+                        String::from("Press / to search/filter, ↑/↓/PgUp/PgDn to scroll, Esc/q to go back")
+                    };
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Length(3), // Make filter box taller
+                            Constraint::Min(0),
+                        ])
+                        .split(size);
+                    let filter_para = Paragraph::new(filter_line)
+                        .block(Block::default().borders(Borders::ALL).title("Search/Filter"));
+                    f.render_widget(filter_para, chunks[0]);
+                    // Calculate visible log window
+                    let log_height = chunks[1].height as usize;
+                    let total = log.len();
+                    let max_scroll = total.saturating_sub(log_height);
+                    let offset = app.log_scroll_offset.min(max_scroll);
+                    let visible = &log[offset..(offset + log_height).min(total)];
+                    render_process_log_tab(f, chunks[1], visible);
                 },
                 ViewMode::Help => {
                     let size = f.size();
@@ -593,6 +682,7 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
         .split(chunks[2]);
 
     // Commands help
+<<<<<<< Updated upstream
     let commands = match app.kill_stop_input_state {
         KillStopInputState::SelectingPid => vec![
             Span::styled("Commands: ", Style::default().fg(Color::White)),
@@ -608,6 +698,14 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
             Span::styled("[Esc] Back", Style::default().fg(Color::Blue)),
         ],
     };
+=======
+    let commands = vec![
+        Span::styled("Commands: ", Style::default().fg(Color::White)),
+        Span::styled("[1] Kill  ", Style::default().fg(Color::Red)),
+        Span::styled("[2] Stop  ", Style::default().fg(Color::Yellow)),
+        Span::styled("[Esc] Back", Style::default().fg(Color::Blue)),
+    ];
+>>>>>>> Stashed changes
     let commands_text = Paragraph::new(Line::from(commands))
         .block(Block::default().borders(Borders::ALL))
         .alignment(Alignment::Left);
@@ -877,8 +975,9 @@ fn handle_events(app: &mut App) -> Result<bool, Box<dyn Error>> {
                     }
                 }
                 ViewMode::ProcessLog => {
-                    // Handle process log input
-                    return Ok(false);
+                    if handle_process_log_input(key, app)? {
+                        return Ok(true);
+                    }
                 }
                 ViewMode::Help => {
                     // Handle help input
@@ -1143,6 +1242,7 @@ fn handle_filter_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Err
 }
 
 fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+<<<<<<< Updated upstream
     let processes = app.process_manager.get_processes();
     match app.kill_stop_input_state {
         KillStopInputState::SelectingPid => {
@@ -1167,6 +1267,30 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                 KeyCode::Enter => {
                     if !processes.is_empty() {
                         app.kill_stop_input_state = KillStopInputState::EnteringAction;
+=======
+    match key.code {
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            app.input_state.pid_input.push(c);
+            app.input_state.message = None;
+        }
+        KeyCode::Backspace => {
+            app.input_state.pid_input.pop();
+            app.input_state.message = None;
+        }
+        KeyCode::Enter => {
+            if !app.input_state.pid_input.is_empty() {
+                if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
+                    if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
+                        app.input_state.message = Some((
+                            format!("PID {} selected. Press [1] to kill or [2] to stop", pid),
+                            false
+                        ));
+                    } else {
+                        app.input_state.message = Some((
+                            format!("Error: Process with PID {} not found", pid),
+                            true
+                        ));
+>>>>>>> Stashed changes
                         app.input_state.pid_input.clear();
                         app.input_state.message = None;
                     }
@@ -1179,6 +1303,7 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                 _ => {}
             }
         }
+<<<<<<< Updated upstream
         KillStopInputState::EnteringAction => {
             match key.code {
                 KeyCode::Char('k') | KeyCode::Char('s') | KeyCode::Char('c') => {
@@ -1206,6 +1331,13 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                         };
 
                         if let Some((msg, is_error)) = action {
+=======
+        KeyCode::Char('1') if !app.input_state.pid_input.is_empty() => {
+            if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
+                if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
+                    match app.process_manager.kill_process(pid) {
+                        Ok(_) => {
+>>>>>>> Stashed changes
                             app.input_state.message = Some((
                                 format!("{} {}", msg, process.pid),
                                 is_error
@@ -1222,6 +1354,54 @@ fn handle_kill_stop_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn 
                 _ => {}
             }
         }
+<<<<<<< Updated upstream
+=======
+        KeyCode::Char('2') if !app.input_state.pid_input.is_empty() => {
+            if let Ok(pid) = app.input_state.pid_input.parse::<u32>() {
+                if app.process_manager.get_processes().iter().any(|p| p.pid == pid) {
+                    match app.process_manager.stop_process(pid) {
+                        Ok(_) => {
+                            app.input_state.message = Some((
+                                format!("Successfully stopped process {}", pid),
+                                false
+                            ));
+                            app.input_state.message_timeout = Some(std::time::Instant::now() + Duration::from_secs(1));
+                            app.input_state.pid_input.clear();
+                        }
+                        Err(e) => {
+                            app.input_state.message = Some((
+                                format!("Error stopping process: {}", e),
+                                true
+                            ));
+                        }
+                    }
+                } else {
+                    app.input_state.message = Some((
+                        format!("Error: Process with PID {} not found", pid),
+                        true
+                    ));
+                    app.input_state.pid_input.clear();
+                }
+            }
+        }
+        KeyCode::Up => {
+            if app.scroll_offset > 0 {
+                app.scroll_offset -= 1;
+            }
+        }
+        KeyCode::Down => {
+            let process_len = app.process_manager.get_processes().len();
+            if app.scroll_offset < process_len.saturating_sub(app.display_limit) {
+                app.scroll_offset += 1;
+            }
+        }
+        KeyCode::Esc => {
+            app.view_mode = ViewMode::ProcessList;
+            app.input_state.pid_input.clear();
+            app.input_state.message = None;
+        }
+        _ => {}
+>>>>>>> Stashed changes
     }
     Ok(false)
 }
@@ -1569,15 +1749,6 @@ fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect, app: &Ap
     }
 }
 
-fn render_process_log_tab(frame: &mut ratatui::Frame, area: Rect) {
-    let text = vec![
-        Line::from(vec![Span::styled("Process Log View", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
-        Line::from(vec![Span::styled("View detailed logs for each process", Style::default().fg(Color::Gray))]),
-    ];
-    let widget = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Process Log"));
-    frame.render_widget(widget, area);
-}
-
 fn render_help_tab(frame: &mut ratatui::Frame, area: Rect) {
     let text = vec![
         Line::from(vec![Span::styled("Help & Documentation", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
@@ -1589,4 +1760,80 @@ fn render_help_tab(frame: &mut ratatui::Frame, area: Rect) {
     ];
     let widget = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Help"));
     frame.render_widget(widget, area);
+}
+
+fn handle_process_log_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
+    let log: Vec<_> = if app.log_filter_input.is_empty() {
+        app.process_exit_log.make_contiguous().to_vec()
+    } else {
+        let query = app.log_filter_input.to_lowercase();
+        app.process_exit_log
+            .iter()
+            .filter(|entry| {
+                entry.name.to_lowercase().contains(&query)
+                    || entry.user.as_ref().map(|u| u.to_lowercase().contains(&query)).unwrap_or(false)
+                    || entry.pid.to_string().contains(&query)
+            })
+            .cloned()
+            .collect()
+    };
+    let log_height = 10; // fallback, not used for clamping here
+    let total = log.len();
+    match app.log_filter_active {
+        true => match key.code {
+            KeyCode::Esc => {
+                app.log_filter_active = false;
+                app.log_filter_input.clear();
+                app.log_scroll_offset = 0;
+            }
+            KeyCode::Enter => {
+                app.log_filter_active = false;
+                app.log_scroll_offset = 0;
+            }
+            KeyCode::Backspace => {
+                app.log_filter_input.pop();
+                app.log_scroll_offset = 0;
+            }
+            KeyCode::Char(c) => {
+                app.log_filter_input.push(c);
+                app.log_scroll_offset = 0;
+            }
+            _ => {}
+        },
+        false => match key.code {
+            KeyCode::Char('/') => {
+                app.log_filter_active = true;
+                app.log_filter_input.clear();
+                app.log_scroll_offset = 0;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.view_mode = ViewMode::ProcessList;
+                app.log_filter_input.clear();
+                app.log_filter_active = false;
+                app.log_scroll_offset = 0;
+            }
+            KeyCode::Up => {
+                let log_height = 10; // fallback, not used for clamping here
+                let max_scroll = total.saturating_sub(log_height);
+                app.log_scroll_offset = app.log_scroll_offset.saturating_sub(1).min(max_scroll);
+            }
+            KeyCode::Down => {
+                let log_height = 10; // fallback, not used for clamping here
+                let max_scroll = total.saturating_sub(log_height);
+                app.log_scroll_offset = (app.log_scroll_offset + 1).min(max_scroll);
+            }
+            KeyCode::PageUp => {
+                let log_height = 10; // fallback, not used for clamping here
+                let max_scroll = total.saturating_sub(log_height);
+                app.log_scroll_offset = app.log_scroll_offset.saturating_sub(10).min(max_scroll);
+            }
+            KeyCode::PageDown => {
+                let log_height = 10; // fallback, not used for clamping here
+                let max_scroll = total.saturating_sub(log_height);
+                app.log_scroll_offset = (app.log_scroll_offset + 10).min(max_scroll);
+            }
+            _ => {}
+        },
+    }
+    Ok(false)
 }

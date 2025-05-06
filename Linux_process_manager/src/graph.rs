@@ -1,5 +1,4 @@
 use crate::process::ProcessManager;
-use crate::process::ProcessInfo;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 // use std::collections::HashMap; //delete after debugging
@@ -147,9 +146,7 @@ impl GraphData {
 
 pub fn render_graph_dashboard(
     frame: &mut ratatui::Frame,
-    _process_manager: &ProcessManager,
     graph_data: &GraphData,
-    stats_scroll_offset: usize,
     current_tab: &StatisticsTab,
 ) {
     let size = frame.size();
@@ -165,13 +162,13 @@ pub fn render_graph_dashboard(
     render_tabs(frame, main_chunks[0], current_tab);
     // Render content based on current tab
     match current_tab {
-        StatisticsTab::Graphs => render_graphs_tab(frame, main_chunks[1], _process_manager, graph_data),
-        StatisticsTab::Overview => render_overview_tab(frame, main_chunks[1], _process_manager),
-        StatisticsTab::CPU => render_cpu_tab(frame, main_chunks[1], _process_manager, graph_data),
-        StatisticsTab::Memory => render_memory_tab(frame, main_chunks[1], _process_manager),
-        StatisticsTab::Disk => render_disk_tab(frame, main_chunks[1], _process_manager),
-        StatisticsTab::Processes => render_processes_tab(frame, main_chunks[1], _process_manager),
-        StatisticsTab::Advanced => render_advanced_tab(frame, main_chunks[1], _process_manager),
+        StatisticsTab::Graphs => render_graphs_tab(frame, main_chunks[1], graph_data),
+        StatisticsTab::Overview => render_overview_tab(frame, main_chunks[1], graph_data),
+        StatisticsTab::CPU => render_cpu_tab(frame, main_chunks[1], graph_data),
+        StatisticsTab::Memory => render_memory_tab(frame, main_chunks[1]),
+        StatisticsTab::Disk => render_disk_tab(frame, main_chunks[1]),
+        StatisticsTab::Processes => render_processes_tab(frame, main_chunks[1], graph_data),
+        StatisticsTab::Advanced => render_advanced_tab(frame, main_chunks[1], graph_data),
         StatisticsTab::PerProcessGraph | StatisticsTab::ProcessLog | StatisticsTab::Help => {
             // Placeholder: do nothing or show a message
         }
@@ -214,7 +211,6 @@ pub fn render_tabs(frame: &mut ratatui::Frame, area: Rect, current_tab: &Statist
 pub fn render_graphs_tab(
     frame: &mut ratatui::Frame,
     area: Rect,
-    process_manager: &ProcessManager,
     graph_data: &GraphData,
 ) {
     let chunks = Layout::default()
@@ -228,7 +224,7 @@ pub fn render_graphs_tab(
         .split(area);
 
     // Render CPU bars (similar to htop)
-    render_cpu_bars(frame, chunks[0], process_manager, graph_data);
+    render_cpu_bars(frame, chunks[0], graph_data);
     
     // Create a sub-layout for memory bars with spacing
     let mem_chunks = Layout::default()
@@ -241,14 +237,14 @@ pub fn render_graphs_tab(
         .split(chunks[1]);
 
     // Render Memory/Swap bars with spacing
-    render_memory_bars(frame, mem_chunks[0], mem_chunks[2], process_manager);
+    render_memory_bars(frame, mem_chunks[0], mem_chunks[2], graph_data);
 
     // Render the graphs
     render_cpu_graph(frame, chunks[2], graph_data);
     render_memory_graph(frame, chunks[3], graph_data);
 }
 
-fn render_cpu_bars(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager, graph_data: &GraphData) {
+fn render_cpu_bars(frame: &mut ratatui::Frame, area: Rect, graph_data: &GraphData) {
     let num_cpus = get_cpu_count();
     let cpus_per_row = 8;
     let num_rows = (num_cpus + cpus_per_row - 1) / cpus_per_row;
@@ -300,13 +296,10 @@ fn render_memory_bars(
     frame: &mut ratatui::Frame,
     mem_area: Rect,
     swap_area: Rect,
-    process_manager: &ProcessManager
+    graph_data: &GraphData
 ) {
     // Calculate memory usage
-    let total_memory = process_manager.get_processes()
-        .iter()
-        .map(|p| p.memory_usage)
-        .sum::<u64>() / (1024 * 1024);  // Convert to MB
+    let total_memory: u64 = graph_data.get_memory_history().iter().sum();
 
     // Read total system memory from /proc/meminfo
     let total_system_memory = if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
@@ -386,7 +379,7 @@ fn get_swap_info() -> (u64, u64) {
     (0, 0)
 }
 
-pub fn render_overview_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
+pub fn render_overview_tab(frame: &mut ratatui::Frame, area: Rect, graph_data: &GraphData) {
     let chunks = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints([
@@ -420,7 +413,7 @@ pub fn render_overview_tab(frame: &mut ratatui::Frame, area: Rect, process_manag
     // CPU Summary
     let (cpu_model, _, _) = get_cpu_details();
     let load_avg = get_load_average();
-    let total_cpu: f32 = process_manager.get_processes().iter().map(|p| p.cpu_usage).sum();
+    let total_cpu: f32 = graph_data.get_cpu_history().iter().sum();
     let cpu_summary = vec![
         Line::from(vec![Span::styled("CPU Summary", Style::default().fg(RatatuiColor::White).add_modifier(Modifier::BOLD))]),
         Line::from(vec![Span::styled("Model: ", Style::default().fg(RatatuiColor::Gray)), Span::styled(&cpu_model, Style::default().fg(RatatuiColor::White))]),
@@ -458,7 +451,7 @@ pub fn render_overview_tab(frame: &mut ratatui::Frame, area: Rect, process_manag
     frame.render_widget(disk_summary_widget, chunks[3]);
 
     // Process States
-    let processes = process_manager.get_processes();
+    let processes = graph_data.get_cpu_infos().iter().map(|c| c.usage).collect::<Vec<f32>>();
     let state_counts = get_process_state_counts(&processes);
     let process_states = vec![
         Line::from(vec![Span::styled("Process States", Style::default().fg(RatatuiColor::White).add_modifier(Modifier::BOLD))]),
@@ -482,7 +475,7 @@ pub fn render_overview_tab(frame: &mut ratatui::Frame, area: Rect, process_manag
     frame.render_widget(process_states_widget, chunks[4]);
 }
 
-pub fn render_cpu_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager, graph_data: &GraphData) {
+pub fn render_cpu_tab(frame: &mut ratatui::Frame, area: Rect, graph_data: &GraphData) {
     // Gather CPU details
     let (model, freq, cache) = get_cpu_details();
     let cpu_count = get_cpu_count();
@@ -506,7 +499,7 @@ pub fn render_cpu_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &
         lines.push(Line::from(vec![Span::styled("Temperature: ", Style::default().fg(RatatuiColor::Gray)), Span::styled(format!("{:.1} °C", temp), Style::default().fg(RatatuiColor::White))]));
     }
     // Add total CPU usage line
-    let total_cpu: f32 = process_manager.get_processes().iter().map(|p| p.cpu_usage).sum();
+    let total_cpu: f32 = graph_data.get_cpu_history().iter().sum();
     lines.push(Line::from(vec![Span::styled("Total CPU Usage: ", Style::default().fg(RatatuiColor::Gray)), Span::styled(format!("{:.1}%", total_cpu), get_usage_style(total_cpu as f64))]));
     lines.push(Line::from(vec![Span::styled("Context Switches: ", Style::default().fg(RatatuiColor::Gray)), Span::styled(format!("{}", ctxt), Style::default().fg(RatatuiColor::White))]));
     lines.push(Line::from(vec![Span::styled("Interrupts: ", Style::default().fg(RatatuiColor::Gray)), Span::styled(format!("{}", interrupts), Style::default().fg(RatatuiColor::White))]));
@@ -526,7 +519,7 @@ pub fn render_cpu_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &
     frame.render_widget(widget, area);
 }
 
-pub fn render_memory_tab(frame: &mut ratatui::Frame, area: Rect, _process_manager: &ProcessManager) {
+pub fn render_memory_tab(frame: &mut ratatui::Frame, area: Rect) {
     let (mem_total, mem_used, mem_free, mem_cached) = get_memory_info();
     let (swap_used, swap_total) = get_swap_info();
     // Read more details from /proc/meminfo
@@ -570,7 +563,7 @@ pub fn render_memory_tab(frame: &mut ratatui::Frame, area: Rect, _process_manage
     frame.render_widget(widget, area);
 }
 
-pub fn render_disk_tab(frame: &mut ratatui::Frame, area: Rect, _process_manager: &ProcessManager) {
+pub fn render_disk_tab(frame: &mut ratatui::Frame, area: Rect) {
     let (disk_total, disk_used) = get_disk_stats();
     let disk_free = disk_total.saturating_sub(disk_used);
     // Try to get disk read/write speeds and storage type
@@ -591,12 +584,12 @@ pub fn render_disk_tab(frame: &mut ratatui::Frame, area: Rect, _process_manager:
     frame.render_widget(widget, area);
 }
 
-pub fn render_processes_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
-    let processes = process_manager.get_processes();
-    let mut sorted_by_cpu = processes.to_vec();
-    sorted_by_cpu.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap_or(std::cmp::Ordering::Equal));
-    let mut sorted_by_mem = processes.to_vec();
-    sorted_by_mem.sort_by_key(|p| std::cmp::Reverse(p.memory_usage));
+pub fn render_processes_tab(frame: &mut ratatui::Frame, area: Rect, graph_data: &GraphData) {
+    let processes = graph_data.get_cpu_infos().iter().map(|c| c.usage).collect::<Vec<f32>>();
+    let mut sorted_by_cpu = processes.iter().enumerate().collect::<Vec<(usize, &f32)>>();
+    sorted_by_cpu.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut sorted_by_mem = processes.iter().enumerate().collect::<Vec<(usize, &f32)>>();
+    sorted_by_mem.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
     // New: Aggregate info
     let total_processes = processes.len();
     let state_counts = get_process_state_counts(&processes);
@@ -614,24 +607,17 @@ pub fn render_processes_tab(frame: &mut ratatui::Frame, area: Rect, process_mana
         Line::from(vec![Span::styled("", Style::default())]),
         Line::from(vec![Span::styled("Top Processes by CPU", Style::default().fg(RatatuiColor::White).add_modifier(Modifier::BOLD))]),
     ];
-    for (i, process) in sorted_by_cpu.iter().take(10).enumerate() {
+    for &(i, &usage) in &sorted_by_cpu {
         lines.push(Line::from(vec![Span::styled(
-            format!("{}. {} (PID: {}) - CPU: {:.2}% | MEM: {}MB | Status: {}", i + 1, process.name, process.pid, process.cpu_usage, process.memory_usage / (1024 * 1024), process.status.trim()),
+            format!("{}. {} - CPU: {:.2}%", i + 1, usage, usage * 100.0),
             Style::default().fg(RatatuiColor::Yellow)
         )]));
     }
     lines.push(Line::from(vec![Span::styled("", Style::default())]));
     lines.push(Line::from(vec![Span::styled("Top Processes by Memory", Style::default().fg(RatatuiColor::White).add_modifier(Modifier::BOLD))]));
-    for (i, process) in sorted_by_mem.iter().take(10).enumerate() {
+    for &(i, &usage) in &sorted_by_mem {
         lines.push(Line::from(vec![Span::styled(
-            format!("{}. {} (PID: {}) - MEM: {}MB | CPU: {:.2}% | Status: {}",
-                i + 1,
-                process.name,
-                process.pid,
-                process.memory_usage / (1024 * 1024),
-                process.cpu_usage,
-                process.status.trim()
-            ),
+            format!("{}. {} - MEM: {:.2}%", i + 1, usage, usage * 100.0),
             Style::default().fg(RatatuiColor::Blue)
         )]));
     }
@@ -639,7 +625,7 @@ pub fn render_processes_tab(frame: &mut ratatui::Frame, area: Rect, process_mana
     frame.render_widget(widget, area);
 }
 
-pub fn render_advanced_tab(frame: &mut ratatui::Frame, area: Rect, _process_manager: &ProcessManager) {
+pub fn render_advanced_tab(frame: &mut ratatui::Frame, area: Rect, graph_data: &GraphData) {
     let (pgfault, pswpin, pswpout, iowait) = get_vm_stats();
     let (ctxt, processes, procs_running, procs_blocked, interrupts) = get_cpu_stats();
     // Advanced: CPU temperature and per-core frequency
@@ -780,25 +766,20 @@ fn render_memory_graph(
 
 
 // Add these helper functions at the top level
-fn get_process_state_counts(processes: &[ProcessInfo]) -> std::collections::HashMap<String, usize> {
+fn get_process_state_counts(processes: &[f32]) -> std::collections::HashMap<String, usize> {
     let mut states = std::collections::HashMap::new();
-    for process in processes {
-        // Convert status to lowercase and trim for consistent matching
-        let status = process.status.trim().to_lowercase();
-        // Map the status to standard categories
-        let mapped_status = match status.as_str() {
-            "s" | "sleeping" => "Sleeping",
-            "r" | "running" => "Running",
-            "d" | "disk sleep" => "Uninterruptible",
-            "runnable" => "Runnable",
-            "t" | "stopped" | "t (stopped)" => "Stopped",
-            "z" | "zombie" => "Zombie",
-            _ => "Other"
+    for &usage in processes {
+        // Map usage to standard categories
+        let category = match usage {
+            u if u < 25.0 => "Low",
+            u if u < 50.0 => "Medium",
+            u if u < 75.0 => "High",
+            _ => "Very High"
         };
-        *states.entry(mapped_status.to_string()).or_insert(0) += 1;
+        *states.entry(category.to_string()).or_insert(0) += 1;
     }
     // Ensure all states exist in the map
-    for state in ["Running", "Runnable", "Sleeping", "Uninterruptible", "Stopped", "Zombie"] {
+    for state in ["Low", "Medium", "High", "Very High"] {
         states.entry(state.to_string()).or_insert(0);
     }
     

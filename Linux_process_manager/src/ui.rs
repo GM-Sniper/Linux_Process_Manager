@@ -146,14 +146,12 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
                 ViewMode::ProcessList => draw_process_list(f, &app),
                 ViewMode::Statistics => graph::render_graph_dashboard(
                     f,
-                    &app.process_manager,
                     &app.graph_data,
-                    app.stats_scroll_offset,
                     &app.current_stats_tab
                 ),
-                ViewMode::FilterSort => draw_filter_sort_menu(f, &app),
+                ViewMode::FilterSort => draw_filter_sort_menu(f),
                 ViewMode::Sort => draw_sort_menu(f, &app),
-                ViewMode::Filter => draw_filter_menu(f, &app),
+                ViewMode::Filter => draw_filter_menu(f),
                 ViewMode::FilterInput => draw_filter_input_menu(f, &app),
                 ViewMode::KillStop => draw_kill_stop_menu(f, &app),
                 ViewMode::ChangeNice => draw_change_nice_menu(f, &app),
@@ -327,7 +325,7 @@ fn draw_process_list(f: &mut Frame, app: &App) {
     f.render_widget(menu, chunks[2]);
 }
 
-fn draw_filter_sort_menu(f: &mut Frame, app: &App) {
+fn draw_filter_sort_menu(f: &mut Frame) {
     let size = f.size();
     
     let chunks = Layout::default()
@@ -409,7 +407,7 @@ fn draw_sort_menu(f: &mut Frame, app: &App) {
     f.render_widget(status, chunks[2]);
 }
 
-fn draw_filter_menu(f: &mut Frame, app: &App) {
+fn draw_filter_menu(f: &mut Frame) {
     let size = f.size();
     
     let chunks = Layout::default()
@@ -1272,9 +1270,7 @@ fn handle_change_nice_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dy
     Ok(false)
 }
 
-
-
-fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
+fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect) {
     let text = vec![
         Line::from(vec![Span::styled("Per-Process Graph View", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
         Line::from(vec![Span::styled("Select a process to view its resource usage graph", Style::default().fg(Color::Gray))]),
@@ -1283,7 +1279,7 @@ fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect, process_
     frame.render_widget(widget, area);
 }
 
-fn render_process_log_tab(frame: &mut ratatui::Frame, area: Rect, process_manager: &ProcessManager) {
+fn render_process_log_tab(frame: &mut ratatui::Frame, area: Rect) {
     let text = vec![
         Line::from(vec![Span::styled("Process Log View", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
         Line::from(vec![Span::styled("View detailed logs for each process", Style::default().fg(Color::Gray))]),

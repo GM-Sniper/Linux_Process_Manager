@@ -119,7 +119,7 @@ impl GraphData {
         }
         
         // Use system memory usage from /proc/meminfo
-        let (mem_total, mem_used, _mem_free, _mem_cached, _mem_available) = get_memory_info();
+        let (_mem_total, mem_used, _mem_free, _mem_cached, _mem_available) = get_memory_info();
         let total_memory = mem_used / 1024; // Convert to MB
         self.memory_history.push_back(total_memory);
         while self.memory_history.len() > self.max_points {
@@ -317,10 +317,10 @@ fn render_memory_bars(
     frame: &mut ratatui::Frame,
     mem_area: Rect,
     swap_area: Rect,
-    graph_data: &GraphData
+    _graph_data: &GraphData
 ) {
     // Calculate memory usage
-    let (mem_total, mem_used, mem_free, mem_cached, _mem_available) = get_memory_info();
+    let (mem_total, mem_used, _mem_free, _mem_cached, _mem_available) = get_memory_info();
     let memory_percentage = if mem_total > 0 {
         (((mem_used as f64 / mem_total as f64) * 100.0).min(100.0)) as u16
     } else {
@@ -528,7 +528,7 @@ pub fn render_cpu_tab(frame: &mut ratatui::Frame, area: Rect, graph_data: &Graph
 }
 
 pub fn render_memory_tab(frame: &mut ratatui::Frame, area: Rect) {
-    let (mem_total, mem_used, mem_free, mem_cached, mem_available) = get_memory_info();
+    let (mem_total, mem_used, mem_free, mem_cached, _mem_available) = get_memory_info();
     let (swap_used, swap_total) = get_swap_info();
     // Read more details from /proc/meminfo
     let mut available = 0;
@@ -769,25 +769,26 @@ fn render_memory_graph(
 
 
 // Add these helper functions at the top level
-fn get_process_state_counts(processes: &[f32]) -> std::collections::HashMap<String, usize> {
-    let mut states = std::collections::HashMap::new();
-    for &usage in processes {
-        // Map usage to standard categories
-        let category = match usage {
-            u if u < 25.0 => "Low",
-            u if u < 50.0 => "Medium",
-            u if u < 75.0 => "High",
-            _ => "Very High"
-        };
-        *states.entry(category.to_string()).or_insert(0) += 1;
-    }
-    // Ensure all states exist in the map
-    for state in ["Low", "Medium", "High", "Very High"] {
-        states.entry(state.to_string()).or_insert(0);
-    }
+// fn get_process_state_counts(processes: &[f32]) -> std::collections::HashMap<String, usize> {
+//     let mut states = std::collections::HashMap::new();
+//     for &usage in processes {
+//         // Map usage to standard categories
+//         let category = match usage {
+//             u if u < 25.0 => "Low",
+//             u if u < 50.0 => "Medium",
+//             u if u < 75.0 => "High",
+//             _ => "Very High"
+//         };
+//         *states.entry(category.to_string()).or_insert(0) += 1;
+//     }
+//     // Ensure all states exist in the map
+//     for state in ["Low", "Medium", "High", "Very High"] {
+//         states.entry(state.to_string()).or_insert(0);
+//     }
     
-    states
-}
+//     states
+// }
+//warning
 
 fn get_memory_info() -> (u64, u64, u64, u64, u64) { // Returns (total, used, free, cached, available) in KB
     let mut total = 0;
@@ -1129,8 +1130,8 @@ fn get_process_state_counts_from_status(processes: &[ProcessInfo]) -> std::colle
 fn get_total_cpu_usage() -> f32 {
     use std::sync::OnceLock;
     static LAST_TOTAL: OnceLock<std::sync::Mutex<(u64, u64)>> = OnceLock::new();
-    let mut last_idle = 0;
-    let mut last_total = 0;
+    let last_idle;
+    let last_total;
     {
         let lock = LAST_TOTAL.get_or_init(|| std::sync::Mutex::new((0, 0)));
         let (li, lt) = *lock.lock().unwrap();

@@ -19,7 +19,6 @@ pub struct ProcessExitLogEntry {
 pub fn render_process_log_tab(frame: &mut Frame, area: Rect, log: &[ProcessExitLogEntry]) {
     use ratatui::widgets::{Table, Row, Cell, Block, Borders};
     use ratatui::style::{Style, Color};
-    use ratatui::text::Span;
     use ratatui::layout::Constraint;
 
     let header = Row::new(vec![

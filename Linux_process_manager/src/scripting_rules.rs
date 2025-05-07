@@ -3,6 +3,7 @@ use crate::process::ProcessInfo;
 
 /// A lightweight snapshot of a process used for rule testing.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ProcessSnapshot {
     pub pid: i32,
     pub name: String,
@@ -11,7 +12,7 @@ pub struct ProcessSnapshot {
     pub runtime_secs: u64,
 }
 
-
+#[allow(dead_code)]
 pub struct RuleEngine {
     pub engine: Engine,
     pub scope: Scope<'static>,

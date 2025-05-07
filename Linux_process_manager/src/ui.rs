@@ -84,6 +84,7 @@ enum KillStopInputState {
 
 // StatisticsTab enum to track the current statistics tab
 #[derive(PartialEq)]
+#[allow(dead_code)]
 pub enum StatisticsTab {
     Graphs,
     Overview,
@@ -1837,18 +1838,20 @@ fn render_per_process_graph_tab(frame: &mut ratatui::Frame, area: Rect, app: &Ap
     }
 }
 
-fn render_help_tab(frame: &mut ratatui::Frame, area: Rect) {
-    let text = vec![
-        Line::from(vec![Span::styled("Help & Documentation", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
-        Line::from(vec![Span::styled("Navigation:", Style::default().fg(Color::Cyan))]),
-        Line::from(vec![Span::styled("↑/↓ - Scroll through processes", Style::default().fg(Color::Gray))]),
-        Line::from(vec![Span::styled("1-6 - Switch between views", Style::default().fg(Color::Gray))]),
-        Line::from(vec![Span::styled("S - Show statistics", Style::default().fg(Color::Gray))]),
-        Line::from(vec![Span::styled("q - Quit", Style::default().fg(Color::Gray))]),
-    ];
-    let widget = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Help"));
-    frame.render_widget(widget, area);
-}
+// fn render_help_tab(frame: &mut ratatui::Frame, area: Rect) {
+//     let text = vec![
+//         Line::from(vec![Span::styled("Help & Documentation", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))]),
+//         Line::from(vec![Span::styled("Navigation:", Style::default().fg(Color::Cyan))]),
+//         Line::from(vec![Span::styled("↑/↓ - Scroll through processes", Style::default().fg(Color::Gray))]),
+//         Line::from(vec![Span::styled("1-6 - Switch between views", Style::default().fg(Color::Gray))]),
+//         Line::from(vec![Span::styled("S - Show statistics", Style::default().fg(Color::Gray))]),
+//         Line::from(vec![Span::styled("q - Quit", Style::default().fg(Color::Gray))]),
+//     ];
+//     let widget = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Help"));
+//     frame.render_widget(widget, area);
+// }
+
+//draw_help
 
 fn handle_process_log_input(key: KeyEvent, app: &mut App) -> Result<bool, Box<dyn Error>> {
     // For robust scrolling, recalculate max_scroll based on current filtered log and a default height (e.g., 10)

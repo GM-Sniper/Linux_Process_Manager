@@ -229,8 +229,8 @@ pub fn ui_renderer() -> Result<(), Box<dyn Error>> {
                 ViewMode::Sort => draw_sort_menu(f, &app),
                 ViewMode::Filter => draw_filter_menu(f),
                 ViewMode::FilterInput => draw_filter_input_menu(f, &app),
-                ViewMode::KillStop => draw_kill_stop_menu(f, &app),
-                ViewMode::ChangeNice => draw_change_nice_menu(f, &app),
+                ViewMode::KillStop => draw_kill_stop_menu(f, &mut app),
+                ViewMode::ChangeNice => draw_change_nice_menu(f, &mut app),
                 ViewMode::PerProcessGraph => render_per_process_graph_tab(f, f.size(), &app),
                 ViewMode::RuleInput => draw_rule_input(f, &app), //for scripting                
                 ViewMode::ProcessLog => {
@@ -705,7 +705,7 @@ fn draw_filter_input_menu(f: &mut Frame, app: &App) {
     f.render_widget(input, chunks[2]);
 }
 
-fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
+fn draw_kill_stop_menu(f: &mut Frame, app: &mut App) {
     let size = f.size();
     // Add a visually prominent title box at the top
     let title_chunk = Layout::default()
@@ -744,7 +744,16 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
         .split(size);
 
     // --- LEFT: Process Table with highlight ---
-    let processes = app.process_manager.get_processes();
+    // let processes = app.process_manager.get_processes();
+
+    let processes = if app.rule_engine.active_rule.is_some() {
+        app.process_manager.apply_rules(&mut app.rule_engine);
+        app.process_manager.get_filtered_processes()
+    } else {
+        app.process_manager.get_processes()
+    };
+    
+
     let headers = ["PID", "NAME", "STATUS", "CPU%", "MEM(MB)", "USER"];
     let header_cells = headers
         .iter()
@@ -853,7 +862,7 @@ fn draw_kill_stop_menu(f: &mut Frame, app: &App) {
     f.render_widget(info_box, right_chunks[2]);
 }
 
-fn draw_change_nice_menu(f: &mut Frame, app: &App) {
+fn draw_change_nice_menu(f: &mut Frame, app: &mut App) {
     let size = f.size();
     // Add a visually prominent title box at the top
     let title_chunk = Layout::default()
@@ -892,8 +901,12 @@ fn draw_change_nice_menu(f: &mut Frame, app: &App) {
         .split(size);
 
     // --- LEFT: Process Table with highlight ---
-    let processes = app.process_manager.get_processes();
-    let headers = ["PID", "NAME", "NICE", "CPU%", "USER"];
+    let processes = if app.rule_engine.active_rule.is_some() {
+        app.process_manager.apply_rules(&mut app.rule_engine);
+        app.process_manager.get_filtered_processes()
+    } else {
+        app.process_manager.get_processes()
+    };    let headers = ["PID", "NAME", "NICE", "CPU%", "USER"];
     let header_cells = headers
         .iter()
         .map(|h| Cell::from(*h).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
